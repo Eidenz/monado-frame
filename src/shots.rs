@@ -13,6 +13,8 @@ pub enum PhotoAction {
     Copy,
     Delete,
     Dismiss,
+    Translate,
+    ToggleView,
 }
 
 /// All *.png in `dir`, newest first, with modified times.
@@ -84,4 +86,31 @@ pub fn copy_to_clipboard(path: &str) {
         },
         Err(e) => log::warn!("copy: cannot open {path}: {e}"),
     }
+}
+
+pub fn copy_text_to_clipboard(text: &str) {
+    use std::io::Write;
+    match std::process::Command::new("wl-copy").stdin(std::process::Stdio::piped()).spawn() {
+        Ok(mut child) => {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            log::info!("copied text to clipboard");
+        }
+        Err(e) => log::warn!("wl-copy (text) failed ({e}); is wl-clipboard installed?"),
+    }
+}
+
+/// Decode the first QR code found in the image, if any.
+pub fn decode_qr(path: &Path) -> Option<String> {
+    let img = image::open(path).ok()?.into_luma8();
+    let mut prep = rqrr::PreparedImage::prepare(img);
+    for grid in prep.detect_grids() {
+        if let Ok((_meta, content)) = grid.decode() {
+            if !content.is_empty() {
+                return Some(content);
+            }
+        }
+    }
+    None
 }

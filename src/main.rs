@@ -7,6 +7,7 @@
 mod config;
 mod mathx;
 mod shots;
+mod translate;
 
 use std::env;
 use std::fs;
@@ -20,7 +21,7 @@ use ash::vk;
 use ash::vk::Handle as _;
 use openxr as xr;
 
-use config::Settings;
+use config::{AppSettings, Settings};
 use mathx::{cross, dot, forward, locate_pose, normalize, pose_compose, pose_invert, qf, quat_from_axes, quat_from_euler_deg, quat_rotate, quatf, raycast, vec3f};
 use shots::{Photo, PhotoAction};
 
@@ -138,7 +139,16 @@ fn paint_corner_brackets(painter: &egui::Painter, r: egui::Rect, len: f32, strok
     painter.line_segment([r.right_bottom(), r.right_bottom() + vec2(0.0, -len)], stroke);
 }
 
-fn build_settings(ctx: &egui::Context, s: &mut Settings, changed: &mut bool, open_gallery: &mut bool, alpha: u8) {
+#[allow(clippy::too_many_arguments)]
+fn build_settings(
+    ctx: &egui::Context,
+    s: &mut Settings,
+    app: &mut AppSettings,
+    changed: &mut bool,
+    app_changed: &mut bool,
+    open_gallery: &mut bool,
+    alpha: u8,
+) {
     use egui_phosphor::regular as icons;
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
         panel_card(ui, alpha, |ui| {
@@ -155,6 +165,15 @@ fn build_settings(ctx: &egui::Context, s: &mut Settings, changed: &mut bool, ope
             ui.add_space(16.0);
             ui.separator();
             ui.add_space(10.0);
+            ui.label(egui::RichText::new(format!("{}  QR codes", icons::QR_CODE)).color(theme::ON_SURFACE_VAR));
+            ui.add_space(4.0);
+            *app_changed |= ui.checkbox(&mut app.qr_detect, "Detect QR codes in screenshots").changed();
+            ui.add_enabled_ui(app.qr_detect, |ui| {
+                *app_changed |= ui.checkbox(&mut app.qr_autodelete, "Delete the screenshot, keep only the code").changed();
+            });
+            ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(10.0);
             ui.vertical_centered(|ui| {
                 let label = egui::RichText::new(format!("{}  Open gallery", icons::IMAGES)).color(egui::Color32::BLACK);
                 if ui.add(egui::Button::new(label).fill(theme::PRIMARY)).clicked() {
@@ -167,24 +186,58 @@ fn build_settings(ctx: &egui::Context, s: &mut Settings, changed: &mut bool, ope
     });
 }
 
-fn build_photo(ctx: &egui::Context, tex: Option<&egui::TextureHandle>, when: &str, action: &mut PhotoAction, alpha: u8) {
+#[allow(clippy::too_many_arguments)]
+fn build_photo(
+    ctx: &egui::Context,
+    tex: Option<&egui::TextureHandle>,
+    text: Option<&str>,
+    show_text: bool,
+    translating: bool,
+    translate_ok: bool,
+    when: &str,
+    action: &mut PhotoAction,
+    alpha: u8,
+) {
     use egui_phosphor::regular as icons;
+    let has_img = tex.is_some();
+    let has_text = text.is_some();
+    // Show text when asked, or when there's no image to show (a QR text panel).
+    let showing_text = !translating && has_text && (show_text || !has_img);
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
         panel_card(ui, alpha, |ui| {
-            header(ui, format!("{}  Screenshot", icons::CAMERA), Some(when.to_string()));
+            let title = if showing_text && has_img {
+                format!("{}  Translation", icons::TRANSLATE)
+            } else if showing_text {
+                format!("{}  Content", icons::QR_CODE)
+            } else {
+                format!("{}  Screenshot", icons::CAMERA)
+            };
+            header(ui, title, Some(when.to_string()));
 
-            // Reserve the action row at the bottom; the image fills the rest.
+            // Reserve the action row at the bottom; the body fills the rest.
             let footer_h = 48.0;
             let body_h = (ui.available_height() - footer_h).max(40.0);
             ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
-                ui.centered_and_justified(|ui| {
-                    if let Some(t) = tex {
-                        let resp = ui.add(egui::Image::new(t).max_size(ui.available_size() * 0.96).corner_radius(8));
-                        paint_corner_brackets(ui.painter(), resp.rect.expand(8.0), 24.0, egui::Stroke::new(2.5, theme::PRIMARY));
-                    } else {
-                        ui.label(egui::RichText::new("No screenshot").color(theme::ON_SURFACE_VAR));
-                    }
-                });
+                if translating {
+                    ui.centered_and_justified(|ui| {
+                        ui.add(egui::Spinner::new().size(36.0));
+                        ui.label(egui::RichText::new("  Translating…").color(theme::ON_SURFACE_VAR));
+                    });
+                } else if showing_text {
+                    let txt = text.unwrap_or("");
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(txt).size(22.0).color(egui::Color32::WHITE)).wrap());
+                    });
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        if let Some(t) = tex {
+                            let resp = ui.add(egui::Image::new(t).max_size(ui.available_size() * 0.96).corner_radius(8));
+                            paint_corner_brackets(ui.painter(), resp.rect.expand(8.0), 24.0, egui::Stroke::new(2.5, theme::PRIMARY));
+                        } else {
+                            ui.label(egui::RichText::new("No content").color(theme::ON_SURFACE_VAR));
+                        }
+                    });
+                }
             });
 
             ui.add_space(6.0);
@@ -192,8 +245,20 @@ fn build_photo(ctx: &egui::Context, tex: Option<&egui::TextureHandle>, when: &st
                 if ui.button(format!("{}  Copy", icons::COPY)).clicked() {
                     *action = PhotoAction::Copy;
                 }
-                if ui.button(format!("{}  Delete", icons::TRASH)).clicked() {
+                // Delete the underlying file (screenshots only — text panels have none).
+                if has_img && ui.button(format!("{}  Delete", icons::TRASH)).clicked() {
                     *action = PhotoAction::Delete;
+                }
+                // Translate a screenshot, or flip between image and translation.
+                if has_img && !translating {
+                    if has_text {
+                        let label = if showing_text { format!("{}  Image", icons::IMAGE) } else { format!("{}  Text", icons::TEXT_T) };
+                        if ui.button(label).clicked() {
+                            *action = PhotoAction::ToggleView;
+                        }
+                    } else if translate_ok && ui.button(format!("{}  Translate", icons::TRANSLATE)).clicked() {
+                        *action = PhotoAction::Translate;
+                    }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button(format!("{}  Close", icons::X)).clicked() {
@@ -251,6 +316,7 @@ fn parse3(s: &str) -> Option<[f32; 3]> {
 fn build_wrist(
     ctx: &egui::Context,
     thumb: Option<&egui::TextureHandle>,
+    qr: Option<&str>,
     when: &str,
     idx: usize,
     total: usize,
@@ -262,21 +328,39 @@ fn build_wrist(
         panel_card(ui, alpha, |ui| {
             ui.horizontal(|ui| {
                 let size = egui::vec2(100.0, 72.0);
-                if let Some(t) = thumb {
-                    let img = egui::Image::new(t).fit_to_exact_size(size).corner_radius(8);
-                    if ui.add(egui::ImageButton::new(img).frame(false)).on_hover_text("Open").clicked() {
-                        action = WristAction::Open;
+                match (qr, thumb) {
+                    // QR notification: a QR glyph button + the decoded content.
+                    (Some(content), _) => {
+                        let icon = egui::RichText::new(icons::QR_CODE).size(44.0).color(egui::Color32::BLACK);
+                        if ui.add_sized(size, egui::Button::new(icon).fill(theme::PRIMARY)).on_hover_text("Open").clicked() {
+                            action = WristAction::Open;
+                        }
+                        ui.add_space(10.0);
+                        ui.vertical(|ui| {
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new("QR code").strong().color(egui::Color32::WHITE));
+                            ui.add_space(2.0);
+                            ui.label(egui::RichText::new(truncate(content, 34)).size(14.0).color(theme::ON_SURFACE_VAR));
+                        });
                     }
-                } else {
-                    ui.allocate_space(size);
+                    // Screenshot notification: a clickable preview + date.
+                    (None, Some(t)) => {
+                        let img = egui::Image::new(t).fit_to_exact_size(size).corner_radius(8);
+                        if ui.add(egui::ImageButton::new(img).frame(false)).on_hover_text("Open").clicked() {
+                            action = WristAction::Open;
+                        }
+                        ui.add_space(10.0);
+                        ui.vertical(|ui| {
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new(format!("{}  New screenshot", icons::CAMERA)).strong().color(egui::Color32::WHITE));
+                            ui.add_space(2.0);
+                            ui.label(egui::RichText::new(when).size(15.0).color(theme::ON_SURFACE_VAR));
+                        });
+                    }
+                    (None, None) => {
+                        ui.allocate_space(size);
+                    }
                 }
-                ui.add_space(10.0);
-                ui.vertical(|ui| {
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new(format!("{}  New screenshot", icons::CAMERA)).strong().color(egui::Color32::WHITE));
-                    ui.add_space(2.0);
-                    ui.label(egui::RichText::new(when).size(15.0).color(theme::ON_SURFACE_VAR));
-                });
             });
             if total > 1 {
                 ui.add_space(8.0);
@@ -362,19 +446,25 @@ fn build_gallery(
     });
 }
 
-// A queued screenshot notification shown on the wrist (mini preview + date).
+// A queued wrist notification: a screenshot (preview + date) or, when a QR code
+// was detected in it, the decoded QR content (no preview).
 struct Pending {
     path: PathBuf,
     when: String,
-    thumb: egui::TextureHandle,
+    thumb: Option<egui::TextureHandle>, // None for QR notifications
+    qr: Option<String>,                 // decoded QR content, if any
 }
 
-// A pooled floating photo window. `open` toggles whether it's shown/interactive.
+// A pooled floating window: a photo (`photo`) or text content (`text`, e.g. a
+// non-URL QR payload). `open` toggles whether it's shown/interactive.
 struct PhotoSlot {
     gfx: PanelGfx,
     open: bool,
     photo: Option<Photo>,
     path: Option<PathBuf>,
+    text: Option<String>, // translation result or QR payload
+    show_text: bool,      // image vs text view (when both exist)
+    translating: bool,    // a translation request is in flight
     when: String,
 }
 
@@ -382,18 +472,28 @@ fn close_slot(s: &mut PhotoSlot) {
     s.open = false;
     s.photo = None;
     s.path = None;
+    s.text = None;
+    s.show_text = false;
+    s.translating = false;
     s.when.clear();
+}
+
+fn free_slot(pool: &mut [PhotoSlot]) -> usize {
+    pool.iter().position(|s| !s.open).unwrap_or(0)
 }
 
 // Open `path` in a free pool slot (reusing slot 0 if all are taken), positioned
 // in front of the head and offset per slot so multiple windows don't stack.
 fn open_photo(pool: &mut [PhotoSlot], path: &Path, when: &str, hmd: Option<xr::Posef>) {
-    let slot = pool.iter().position(|s| !s.open).unwrap_or(0);
+    let slot = free_slot(pool);
     match shots::load(&pool[slot].gfx.ctx, path) {
         Ok(p) => {
             let s = &mut pool[slot];
             s.photo = Some(p);
             s.path = Some(path.to_path_buf());
+            s.text = None;
+            s.show_text = false;
+            s.translating = false;
             s.when = when.to_string();
             s.open = true;
             if let Some(h) = hmd {
@@ -403,6 +503,49 @@ fn open_photo(pool: &mut [PhotoSlot], path: &Path, when: &str, hmd: Option<xr::P
         }
         Err(e) => log::warn!("open photo {path:?}: {e}"),
     }
+}
+
+// Open text content (e.g. a non-URL QR payload) in a free pool slot.
+fn open_text(pool: &mut [PhotoSlot], text: &str, when: &str, hmd: Option<xr::Posef>) {
+    let slot = free_slot(pool);
+    let s = &mut pool[slot];
+    s.photo = None;
+    s.path = None;
+    s.text = Some(text.to_string());
+    s.show_text = true;
+    s.translating = false;
+    s.when = when.to_string();
+    s.open = true;
+    if let Some(h) = hmd {
+        s.gfx.pose = front_pose(&h, 0.9, (slot as f32 - 1.0) * 0.34);
+    }
+    log::info!("opened text panel in slot {slot}");
+}
+
+fn open_url(url: &str) {
+    match std::process::Command::new("xdg-open").arg(url).spawn() {
+        Ok(_) => log::info!("opened {url}"),
+        Err(e) => log::warn!("xdg-open {url}: {e}"),
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() > max {
+        format!("{}…", s.chars().take(max).collect::<String>())
+    } else {
+        s.to_string()
+    }
+}
+
+type TranslateMsg = (usize, PathBuf, Result<String, String>);
+
+// Translate `path` on a background thread (a vision model can take many
+// seconds); the result is delivered to the render loop via `tx`.
+fn spawn_translate(tx: std::sync::mpsc::Sender<TranslateMsg>, slot: usize, path: PathBuf) {
+    std::thread::spawn(move || {
+        let res = translate::translate_image(&path);
+        let _ = tx.send((slot, path, res));
+    });
 }
 
 const GALLERY_PER: usize = 12; // thumbnails per gallery page
@@ -900,18 +1043,27 @@ fn run() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("gpu-allocator init: {e}"))?,
     ));
 
-    let mut settings_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (760, 620), (0.40, 0.40 * 620.0 / 760.0), posef([-0.38, 0.0, -1.0]))?;
+    let mut settings_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (760, 720), (0.40, 0.40 * 720.0 / 760.0), posef([-0.38, 0.0, -1.0]))?;
     let mut gallery_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (1120, 900), (0.66, 0.66 * 900.0 / 1120.0), posef([0.0, 0.0, -1.0]))?;
     let mut wrist_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (400, 260), (0.11, 0.11 * 260.0 / 400.0), posef([0.0, 0.0, -1.0]))?;
     let mut photo_pool: Vec<PhotoSlot> = Vec::new();
     for _ in 0..3 {
         let gfx = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (900, 820), (0.52, 0.52 * 820.0 / 900.0), posef([0.0, 0.0, -1.0]))?;
-        photo_pool.push(PhotoSlot { gfx, open: false, photo: None, path: None, when: String::new() });
+        photo_pool.push(PhotoSlot { gfx, open: false, photo: None, path: None, text: None, show_text: false, translating: false, when: String::new() });
     }
     let mut laser = make_laser(&session, format)?;
 
     let mut settings = config::load();
-    log::info!("loaded settings: enabled={} hold_ms={}", settings.enabled, settings.hold_ms);
+    let mut app = config::load_app();
+    let translate_ok = translate::configured();
+    let (translate_tx, translate_rx) = std::sync::mpsc::channel::<TranslateMsg>();
+    log::info!(
+        "loaded settings: enabled={} hold_ms={} qr_detect={} translate={}",
+        settings.enabled,
+        settings.hold_ms,
+        app.qr_detect,
+        translate_ok
+    );
 
     // Actions
     let action_set = xr_instance.create_action_set("monadoframe", "monado-frame controls", 0)?;
@@ -1032,12 +1184,21 @@ fn run() -> Result<()> {
             }
             for path in fresh.iter().rev() {
                 let when = shots::shot_time(path);
-                match shots::load_thumb(&wrist_panel.ctx, path, 256) {
-                    Ok(thumb) => {
-                        log::info!("new screenshot pending: {}", path.display());
-                        pending.insert(0, Pending { path: path.clone(), when, thumb });
+                let qr = if app.qr_detect { shots::decode_qr(path) } else { None };
+                if let Some(content) = qr {
+                    log::info!("new screenshot has QR: {} -> {content}", path.display());
+                    if app.qr_autodelete {
+                        let _ = fs::remove_file(path);
                     }
-                    Err(e) => log::warn!("thumb {path:?}: {e}"),
+                    pending.insert(0, Pending { path: path.clone(), when, thumb: None, qr: Some(content) });
+                } else {
+                    match shots::load_thumb(&wrist_panel.ctx, path, 256) {
+                        Ok(thumb) => {
+                            log::info!("new screenshot pending: {}", path.display());
+                            pending.insert(0, Pending { path: path.clone(), when, thumb: Some(thumb), qr: None });
+                        }
+                        Err(e) => log::warn!("thumb {path:?}: {e}"),
+                    }
                 }
             }
             if !fresh.is_empty() {
@@ -1068,8 +1229,13 @@ fn run() -> Result<()> {
             // Double-press SYSTEM toggles panel visibility. A double tap of
             // right-system opens-then-closes WayVR (net no change) while
             // toggling ours once, so both can run without clashing.
-            let sys_down = system_action.state(&session, left_path)?.current_state
-                || system_action.state(&session, right_path)?.current_state;
+            // Only count SYSTEM from a controller that's actually present. A
+            // powered-off controller reports an INACTIVE action whose state can
+            // glitch, which otherwise fires phantom double-presses and toggles
+            // the settings panel on its own.
+            let sl = system_action.state(&session, left_path)?;
+            let sr = system_action.state(&session, right_path)?;
+            let sys_down = (sl.is_active && sl.current_state) || (sr.is_active && sr.current_state);
             if sys_down && !sys_prev {
                 let now = Instant::now();
                 if last_sys_press.is_some_and(|t| now.duration_since(t).as_millis() < 400) {
@@ -1201,9 +1367,10 @@ fn run() -> Result<()> {
         // Render settings + handle the gallery button.
         if settings_visible {
             let mut changed = false;
+            let mut app_changed = false;
             let mut open_gallery = false;
             render_panel(&mut settings_panel, &device, cmd, cmd_pool, queue, fence, alpha_mode, ptr_settings, |ctx| {
-                build_settings(ctx, &mut settings, &mut changed, &mut open_gallery, panel_alpha);
+                build_settings(ctx, &mut settings, &mut app, &mut changed, &mut app_changed, &mut open_gallery, panel_alpha);
             })?;
             settings_rendered = true;
             let settings_down = ptr_settings.is_some_and(|(_, _, d)| d);
@@ -1212,6 +1379,9 @@ fn run() -> Result<()> {
                 settings.dirty = false;
             } else if changed {
                 settings.dirty = true;
+            }
+            if app_changed {
+                config::save_app(&app); // checkboxes are discrete events; save immediately
             }
             if open_gallery && !gallery_visible {
                 gallery_visible = true;
@@ -1254,6 +1424,18 @@ fn run() -> Result<()> {
             }
         }
 
+        // Apply any finished background translations to their slots.
+        while let Ok((i, path, res)) = translate_rx.try_recv() {
+            if i < photo_pool.len() && photo_pool[i].open && photo_pool[i].path.as_deref() == Some(path.as_path()) {
+                photo_pool[i].translating = false;
+                photo_pool[i].show_text = true;
+                photo_pool[i].text = Some(match res {
+                    Ok(t) => t,
+                    Err(e) => format!("Translation failed:\n{e}"),
+                });
+            }
+        }
+
         // Render each open floating photo panel + handle its actions.
         for i in 0..photo_pool.len() {
             if !photo_pool[i].open {
@@ -1261,15 +1443,30 @@ fn run() -> Result<()> {
             }
             let mut paction = PhotoAction::None;
             let tex = photo_pool[i].photo.as_ref().map(|p| p.handle.clone());
+            let text = photo_pool[i].text.clone();
+            let show_text = photo_pool[i].show_text;
+            let translating = photo_pool[i].translating;
             let when = photo_pool[i].when.clone();
             let ptr = ptr_photo[i];
             render_panel(&mut photo_pool[i].gfx, &device, cmd, cmd_pool, queue, fence, alpha_mode, ptr, |ctx| {
-                build_photo(ctx, tex.as_ref(), &when, &mut paction, panel_alpha);
+                build_photo(ctx, tex.as_ref(), text.as_deref(), show_text, translating, translate_ok, &when, &mut paction, panel_alpha);
             })?;
             photo_rendered[i] = true;
             match paction {
+                PhotoAction::Translate => {
+                    if let Some(p) = photo_pool[i].path.clone() {
+                        photo_pool[i].translating = true;
+                        spawn_translate(translate_tx.clone(), i, p);
+                        log::info!("translating slot {i}");
+                    }
+                }
+                PhotoAction::ToggleView => photo_pool[i].show_text = !photo_pool[i].show_text,
                 PhotoAction::Copy => {
-                    if let Some(p) = &photo_pool[i].path {
+                    if photo_pool[i].show_text {
+                        if let Some(t) = &photo_pool[i].text {
+                            shots::copy_text_to_clipboard(t);
+                        }
+                    } else if let Some(p) = &photo_pool[i].path {
                         shots::copy_to_clipboard(&p.to_string_lossy());
                     }
                 }
@@ -1293,12 +1490,13 @@ fn run() -> Result<()> {
         // Render the wrist card; scroll/open the pending queue.
         if wrist_ok {
             let mut waction = WristAction::None;
-            let thumb = pending.get(pending_idx).map(|p| p.thumb.clone());
+            let thumb = pending.get(pending_idx).and_then(|p| p.thumb.clone());
+            let qr = pending.get(pending_idx).and_then(|p| p.qr.clone());
             let when = pending.get(pending_idx).map(|p| p.when.clone()).unwrap_or_default();
             let idx = pending_idx;
             let total = pending.len();
             render_panel(&mut wrist_panel, &device, cmd, cmd_pool, queue, fence, alpha_mode, ptr_wrist, |ctx| {
-                waction = build_wrist(ctx, thumb.as_ref(), &when, idx, total, panel_alpha);
+                waction = build_wrist(ctx, thumb.as_ref(), qr.as_deref(), &when, idx, total, panel_alpha);
             })?;
             wrist_rendered = true;
             match waction {
@@ -1309,13 +1507,19 @@ fn run() -> Result<()> {
                 }
                 WristAction::Newer => pending_idx = pending_idx.saturating_sub(1),
                 WristAction::Open => {
-                    if let Some((path, when)) = pending.get(pending_idx).map(|p| (p.path.clone(), p.when.clone())) {
-                        open_photo(&mut photo_pool, &path, &when, hmd);
+                    let item = pending.get(pending_idx).map(|p| (p.qr.clone(), p.path.clone(), p.when.clone()));
+                    if let Some((qr, path, when)) = item {
+                        match qr {
+                            // URL QR → open it in the browser; text QR → text panel.
+                            Some(c) if c.starts_with("http://") || c.starts_with("https://") => open_url(&c),
+                            Some(c) => open_text(&mut photo_pool, &c, &when, hmd),
+                            None => open_photo(&mut photo_pool, &path, &when, hmd),
+                        }
                         pending.remove(pending_idx);
                         if pending_idx >= pending.len() {
                             pending_idx = pending.len().saturating_sub(1);
                         }
-                        log::info!("wrist -> opened photo ({} still pending)", pending.len());
+                        log::info!("wrist -> opened ({} still pending)", pending.len());
                     }
                 }
                 WristAction::None => {}

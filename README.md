@@ -38,6 +38,33 @@ Everything is driven by the controllers; there is no desktop window.
   **3** photo windows can be open at once.
 - **Gallery** — open it from the **Open gallery** button in settings: a paged
   grid of every screenshot. Click a thumbnail to open it as a floating window.
+- **QR codes** — enable *Detect QR codes* in settings. New screenshots are
+  scanned; if a QR is found, the wrist shows a QR notification instead of the
+  photo. Clicking it opens the link (`xdg-open`) or shows the text in a panel.
+  Optionally *Delete the screenshot, keep only the code* so QR scans don't
+  clutter your gallery.
+- **Translate** — on a photo window, the **Translate** button sends the image to
+  a vision model that OCRs and translates any text to English, shown in the
+  window (toggle back to the image any time). Requires `translate.env` (below);
+  the button is hidden when it's not configured.
+
+## Translation (optional)
+
+The Translate button uses an [Ollama](https://ollama.com) (OpenAI-compatible)
+**vision** model — one call does OCR + translation. It's gated by a build-time
+config so no endpoint/keys are ever typed in VR: copy `translate.env.example` to
+`translate.env`, set your server, and rebuild.
+
+```ini
+base_url=http://192.168.1.179:11434/v1
+model=qwen3.6:35b
+api_key=ollama
+```
+
+If `translate.env` is absent the feature is compiled out and the button hidden.
+The request runs on a background thread, so the overlay stays responsive while a
+large model thinks. QR detection and settings persist separately in
+`~/.config/monado-frame/config.json`.
 
 ## Environment
 

@@ -49,3 +49,49 @@ pub fn save(s: &Settings) {
         Err(e) => log::warn!("serialise config: {e}"),
     }
 }
+
+// monado-frame's own settings (NOT the Monado detector's gestures.json), e.g. QR
+// handling. Stored at <XDG config>/monado-frame/config.json.
+pub struct AppSettings {
+    pub qr_detect: bool,
+    pub qr_autodelete: bool,
+    pub path: String,
+}
+
+pub fn app_config_path() -> String {
+    let base = env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("{}/.config", env::var("HOME").unwrap_or_default()));
+    format!("{base}/monado-frame/config.json")
+}
+
+pub fn load_app() -> AppSettings {
+    let path = app_config_path();
+    let mut a = AppSettings { qr_detect: false, qr_autodelete: false, path: path.clone() };
+    if let Ok(txt) = fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+            if let Some(b) = v.get("qr_detect").and_then(|x| x.as_bool()) {
+                a.qr_detect = b;
+            }
+            if let Some(b) = v.get("qr_autodelete").and_then(|x| x.as_bool()) {
+                a.qr_autodelete = b;
+            }
+        }
+    }
+    a
+}
+
+pub fn save_app(a: &AppSettings) {
+    if let Some(dir) = Path::new(&a.path).parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let v = serde_json::json!({ "qr_detect": a.qr_detect, "qr_autodelete": a.qr_autodelete });
+    match serde_json::to_string_pretty(&v) {
+        Ok(txt) => match fs::write(&a.path, txt) {
+            Ok(()) => log::info!("wrote {} (qr_detect={} qr_autodelete={})", a.path, a.qr_detect, a.qr_autodelete),
+            Err(e) => log::warn!("failed to write {}: {e}", a.path),
+        },
+        Err(e) => log::warn!("serialise app config: {e}"),
+    }
+}

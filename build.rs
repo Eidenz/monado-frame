@@ -26,4 +26,26 @@ fn main() {
     }
 
     println!("cargo:rustc-link-search=native={out_dir}");
+
+    // Translation config (optional). If `translate.env` exists in the project
+    // root, bake its KEY=value lines into the binary so the Ollama endpoint is
+    // set at build time — no in-VR UI. Absent file => translation disabled.
+    println!("cargo:rerun-if-changed=translate.env");
+    if let Ok(txt) = std::fs::read_to_string("translate.env") {
+        for line in txt.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                let env = match k.trim() {
+                    "base_url" => "MF_TRANSLATE_BASE_URL",
+                    "model" => "MF_TRANSLATE_MODEL",
+                    "api_key" => "MF_TRANSLATE_API_KEY",
+                    _ => continue,
+                };
+                println!("cargo:rustc-env={env}={}", v.trim());
+            }
+        }
+    }
 }
