@@ -1,0 +1,20 @@
+[package]
+name = "monado-frame"
+version = "0.1.0"
+edition = "2021"
+description = "In-headset overlay for Monado: review screenshots and configure the finger-frame gesture"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Matches the versions WayVR uses (proven against this Monado/AMD setup).
+openxr = { version = "0.21", features = ["linked"] }
+ash = "0.38"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+egui = "0.31"
+egui-phosphor = "0.9"
+egui-ash-renderer = { version = "0.8", features = ["gpu-allocator"] }
+gpu-allocator = "0.27"
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
