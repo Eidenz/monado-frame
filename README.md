@@ -10,12 +10,6 @@ It stays fully decoupled from `monado-service` through two files:
 - **writes** `~/.config/monado/gestures.json` — the gesture detector hot-reloads it (toggle, hold delay…);
 - **watches** `~/Pictures/Monado` — any Monado screenshot (gesture, controller chord, or `SIGUSR1`) lands there and is shown for review.
 
-## Status
-
-Early — **Phase 2a**: renders a test panel in-headset to validate the overlay
-pipeline (OpenXR overlay session + Vulkan + a quad layer). Input, the settings
-UI, and screenshot review come next.
-
 ## Build & run
 
 ```bash
@@ -26,10 +20,40 @@ cargo run        # run it while your Monado / Envision VR session is active
 Requires an active OpenXR runtime (Monado) exposing `XR_KHR_vulkan_enable2` and
 `XR_EXTX_overlay`. Logs go to stdout (`RUST_LOG=debug` for more).
 
-## Roadmap
+## Controls
 
-- **P2a** — overlay skeleton: a solid test panel in front of you.
-- **P2b** — controller aim raycast onto the panel + click.
-- **P2c** — settings panel (egui) → writes `gestures.json`.
-- **P2d** — screenshot review: grabbable photo panel with copy / delete / dismiss.
-- **P2e** — grab/positioning polish + a recent-shots history strip.
+Everything is driven by the controllers; there is no desktop window.
+
+- **Settings panel** — hidden on launch. **Double-press SYSTEM** (within 400 ms)
+  to toggle it. Double-tapping right-SYSTEM opens-then-closes WayVR (net no
+  change) while toggling this once, so the two coexist. It spawns in front of
+  wherever you're looking.
+- **Point & click** — aim a controller at a panel; the trigger is the click.
+- **Move a panel** — point at it and squeeze the **grip** (force) to grab; it
+  rides your hand until you release.
+- **Screenshots** — a new shot queues a **notification card** on your left wrist
+  (mini preview + date). It only appears while you glance at your wrist and stays
+  fixed to your hand. Use ‹ › to scroll the queue; click the preview to open that
+  shot as a floating photo window (copy / delete / close). Up to **3** photo
+  windows can be open at once.
+- **Gallery** — open it from the **Open gallery** button in settings: a paged
+  grid of every screenshot. Click a thumbnail to open it as a floating window.
+
+## Environment
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MONADO_SCREENSHOT_DIR` | `~/Pictures/Monado` | Folder watched for new screenshots. |
+| `MONADO_FRAME_OPACITY` | `0.92` | Panel glass opacity (0–1). |
+| `MONADO_FRAME_NO_ALPHA` | unset | Set to disable alpha blending (opaque rectangular panels) if glass looks wrong. |
+| `MONADO_FRAME_NO_LASER` | unset | Set to disable the 3D laser pointer. |
+| `MONADO_FRAME_WRIST_POS` | `-0.05,0.01,0.05` | Watch position offset `x,y,z` (metres) from the left grip pose. |
+| `MONADO_FRAME_WRIST_ROT` | _unset_ | If set to `yaw,pitch,roll` (degrees), forces a fixed hand-locked orientation instead of the auto-captured one. |
+| `MONADO_FRAME_WRIST_FOV` | `20` | Look-at half-angle (degrees) within which the wrist card appears. |
+
+The wrist card follows the left controller's **grip** pose and is hand-locked:
+it takes the head-facing orientation captured the instant you glance at it, then
+turns with your wrist (it doesn't chase the headset). It only shows while you
+look near it (`MONADO_FRAME_WRIST_FOV`). Adjust `MONADO_FRAME_WRIST_POS` to place
+it; to find the axes, run once with `MONADO_FRAME_WRIST_POS=0,0,0` (card at the
+palm) and bump one axis by `0.1` to see which way it moves.
