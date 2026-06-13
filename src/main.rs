@@ -21,7 +21,7 @@ use ash::vk::Handle as _;
 use openxr as xr;
 
 use config::Settings;
-use mathx::{cross, dot, forward, locate_pose, normalize, pose_compose, pose_invert, q_mul, qf, quat_from_axes, quat_from_euler_deg, quatf, raycast, vec3f};
+use mathx::{cross, dot, forward, locate_pose, normalize, pose_compose, pose_invert, qf, quat_from_axes, quat_from_euler_deg, quat_rotate, quatf, raycast, vec3f};
 use shots::{Photo, PhotoAction};
 
 static VK_ENTRY: OnceLock<ash::Entry> = OnceLock::new();
@@ -30,7 +30,6 @@ static RENDER_PASS: OnceLock<vk::RenderPass> = OnceLock::new();
 const PPP: f32 = 1.5;
 const GRAB_START: f32 = 0.40; // grip FORCE to start grabbing
 const GRAB_RELEASE: f32 = 0.15;
-const IDENTITY_QUAT: xr::Quaternionf = xr::Quaternionf { x: 0.0, y: 0.0, z: 0.0, w: 1.0 };
 
 unsafe extern "system" fn get_instance_proc_addr(
     instance: xr::sys::platform::VkInstance,
@@ -944,20 +943,19 @@ fn run() -> Result<()> {
     let aim_right = aim_action.create_space(&session, right_path, xr::Posef::IDENTITY)?;
     let grip_left = grip_pose_action.create_space(&session, left_path, xr::Posef::IDENTITY)?;
 
-    // The wrist card is anchored to the left grip pose and is hand-locked: its
-    // orientation is the head-facing one captured the moment you glance at it,
-    // then frozen relative to the grip so it rotates WITH your wrist (it doesn't
-    // chase the headset). It only shows while you look near it (a small FoV).
+    // The wrist card is anchored to the left grip pose with a fixed hand-locked
+    // orientation, and shows only while its face is turned toward your head (turn
+    // your wrist to reveal it) within a half-angle FoV.
     // MONADO_FRAME_WRIST_POS="x,y,z" (metres, grip frame) places it.
-    // MONADO_FRAME_WRIST_ROT="yaw,pitch,roll" (deg) forces a fixed orientation.
-    // MONADO_FRAME_WRIST_FOV=<deg> sets the look-at half-angle (default 20).
-    let wrist_offset_pos = env::var("MONADO_FRAME_WRIST_POS").ok().and_then(|s| parse3(&s)).unwrap_or([-0.05, 0.01, 0.05]);
-    let wrist_rot: Option<[f32; 4]> =
-        env::var("MONADO_FRAME_WRIST_ROT").ok().and_then(|s| parse3(&s)).map(|[y, p, r]| quat_from_euler_deg(y, p, r));
-    let wrist_fov = env::var("MONADO_FRAME_WRIST_FOV").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(20.0);
+    // MONADO_FRAME_WRIST_ROT="yaw,pitch,roll" (deg) sets its orientation.
+    // MONADO_FRAME_WRIST_FOV=<deg> sets the reveal half-angle (default 35).
+    let wrist_offset_pos = env::var("MONADO_FRAME_WRIST_POS").ok().and_then(|s| parse3(&s)).unwrap_or([-0.04, -0.005, 0.05]);
+    let wrist_euler = env::var("MONADO_FRAME_WRIST_ROT").ok().and_then(|s| parse3(&s)).unwrap_or([90.0, 180.0, 63.0]);
+    let wrist_rot = quat_from_euler_deg(wrist_euler[0], wrist_euler[1], wrist_euler[2]);
+    let wrist_fov = env::var("MONADO_FRAME_WRIST_FOV").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(35.0);
     let cos_show = wrist_fov.to_radians().cos();
     let cos_hide = (wrist_fov + 8.0).to_radians().cos();
-    log::info!("wrist pos={wrist_offset_pos:?} fov={wrist_fov} fixed_rot={}", wrist_rot.is_some());
+    log::info!("wrist pos={wrist_offset_pos:?} rot={wrist_euler:?} fov={wrist_fov}");
 
     let screenshots_dir = env::var("MONADO_SCREENSHOT_DIR")
         .ok()
@@ -977,8 +975,7 @@ fn run() -> Result<()> {
     let mut gallery_page = 0usize;
     let mut sys_prev = false;
     let mut last_sys_press: Option<Instant> = None;
-    let mut wrist_lock: Option<[f32; 4]> = None; // frozen grip-relative orientation
-    let mut wrist_shown = false; // gaze-gate hysteresis state
+    let mut wrist_shown = false; // reveal hysteresis state
 
     log::info!("monado-frame ready. Point to interact, grip (force) to move a panel; Ctrl-C to quit.");
 
@@ -1093,41 +1090,27 @@ fn run() -> Result<()> {
 
             let hands = [(left_path, &aim_left), (right_path, &aim_right)];
 
-            // The wrist card rides the left hand (grip pose) while shots are
-            // pending, but only shows when you look near it. Orientation is the
-            // head-facing one frozen on the frame you start looking, so it then
-            // turns with your wrist instead of chasing the headset.
+            // The wrist card rides the left hand (grip pose) with a fixed
+            // hand-locked orientation, and shows only while its face is turned
+            // toward your head (turn your wrist to reveal it) within the FoV.
             if !pending.is_empty() {
                 if let (Some(gp), Some(h)) = (locate_pose(&grip_left, &space, time), hmd) {
-                    let at = pose_compose(&gp, &xr::Posef { orientation: IDENTITY_QUAT, position: vec3f(wrist_offset_pos) });
+                    let at = pose_compose(&gp, &xr::Posef { orientation: quatf(wrist_rot), position: vec3f(wrist_offset_pos) });
                     let pos = [at.position.x, at.position.y, at.position.z];
-                    let to_w = normalize([pos[0] - h.position.x, pos[1] - h.position.y, pos[2] - h.position.z]);
-                    let cos_angle = dot(normalize(forward(&h)), to_w);
-                    let looking = if wrist_shown { cos_angle > cos_hide } else { cos_angle > cos_show };
-                    wrist_shown = looking;
-                    if looking {
-                        let orient = if let Some(q) = wrist_rot {
-                            pose_compose(&gp, &xr::Posef { orientation: quatf(q), position: vec3f([0.0; 3]) }).orientation
-                        } else {
-                            let to_view = normalize([h.position.x - pos[0], h.position.y - pos[1], h.position.z - pos[2]]);
-                            let x = normalize(cross([0.0, 1.0, 0.0], to_view));
-                            let y = cross(to_view, x);
-                            let bb = quat_from_axes(x, y, to_view);
-                            let gq = qf(&gp.orientation);
-                            let lock = *wrist_lock.get_or_insert_with(|| q_mul([-gq[0], -gq[1], -gq[2], gq[3]], bb));
-                            quatf(q_mul(gq, lock))
-                        };
-                        wrist_panel.pose = xr::Posef { orientation: orient, position: at.position };
+                    let normal = quat_rotate(qf(&at.orientation), [0.0, 0.0, 1.0]); // card faces +Z
+                    let to_head = normalize([h.position.x - pos[0], h.position.y - pos[1], h.position.z - pos[2]]);
+                    let facing = dot(normalize(normal), to_head);
+                    let show = if wrist_shown { facing > cos_hide } else { facing > cos_show };
+                    wrist_shown = show;
+                    if show {
+                        wrist_panel.pose = at;
                         wrist_ok = true;
-                    } else {
-                        wrist_lock = None;
                     }
                 } else {
                     wrist_shown = false;
                 }
             } else {
                 wrist_shown = false;
-                wrist_lock = None;
             }
 
             // All interactable panels this frame (pose + size by target).

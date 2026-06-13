@@ -32,10 +32,10 @@ Everything is driven by the controllers; there is no desktop window.
 - **Move a panel** — point at it and squeeze the **grip** (force) to grab; it
   rides your hand until you release.
 - **Screenshots** — a new shot queues a **notification card** on your left wrist
-  (mini preview + date). It only appears while you glance at your wrist and stays
-  fixed to your hand. Use ‹ › to scroll the queue; click the preview to open that
-  shot as a floating photo window (copy / delete / close). Up to **3** photo
-  windows can be open at once.
+  (mini preview + date). It's hand-locked and only appears when you **turn your
+  wrist so the card faces you**. Use ‹ › to scroll the queue; click the preview
+  to open that shot as a floating photo window (copy / delete / close). Up to
+  **3** photo windows can be open at once.
 - **Gallery** — open it from the **Open gallery** button in settings: a paged
   grid of every screenshot. Click a thumbnail to open it as a floating window.
 
@@ -48,12 +48,12 @@ Everything is driven by the controllers; there is no desktop window.
 | `MONADO_FRAME_NO_ALPHA` | unset | Set to disable alpha blending (opaque rectangular panels) if glass looks wrong. |
 | `MONADO_FRAME_NO_LASER` | unset | Set to disable the 3D laser pointer. |
 | `MONADO_FRAME_WRIST_POS` | `-0.05,0.01,0.05` | Watch position offset `x,y,z` (metres) from the left grip pose. |
-| `MONADO_FRAME_WRIST_ROT` | _unset_ | If set to `yaw,pitch,roll` (degrees), forces a fixed hand-locked orientation instead of the auto-captured one. |
-| `MONADO_FRAME_WRIST_FOV` | `20` | Look-at half-angle (degrees) within which the wrist card appears. |
+| `MONADO_FRAME_WRIST_ROT` | `90,180,63` | Hand-locked orientation `yaw,pitch,roll` (degrees). |
+| `MONADO_FRAME_WRIST_FOV` | `35` | Reveal half-angle (degrees): the card shows while its face points within this of your head. |
 
-The wrist card follows the left controller's **grip** pose and is hand-locked:
-it takes the head-facing orientation captured the instant you glance at it, then
-turns with your wrist (it doesn't chase the headset). It only shows while you
-look near it (`MONADO_FRAME_WRIST_FOV`). Adjust `MONADO_FRAME_WRIST_POS` to place
-it; to find the axes, run once with `MONADO_FRAME_WRIST_POS=0,0,0` (card at the
-palm) and bump one axis by `0.1` to see which way it moves.
+The wrist card follows the left controller's **grip** pose with a fixed
+hand-locked orientation, and appears only when you turn your wrist so the card's
+face points toward your head (within `MONADO_FRAME_WRIST_FOV`). Adjust
+`MONADO_FRAME_WRIST_POS` to place it; to find the axes, run once with
+`MONADO_FRAME_WRIST_POS=0,0,0` (card at the palm) and bump one axis by `0.1` to
+see which way it moves.
