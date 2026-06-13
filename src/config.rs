@@ -55,6 +55,8 @@ pub fn save(s: &Settings) {
 pub struct AppSettings {
     pub qr_detect: bool,
     pub qr_autodelete: bool,
+    pub skip_wrist_photo: bool,
+    pub skip_wrist_qr: bool,
     pub path: String,
 }
 
@@ -68,7 +70,13 @@ pub fn app_config_path() -> String {
 
 pub fn load_app() -> AppSettings {
     let path = app_config_path();
-    let mut a = AppSettings { qr_detect: false, qr_autodelete: false, path: path.clone() };
+    let mut a = AppSettings {
+        qr_detect: false,
+        qr_autodelete: false,
+        skip_wrist_photo: false,
+        skip_wrist_qr: false,
+        path: path.clone(),
+    };
     if let Ok(txt) = fs::read_to_string(&path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
             if let Some(b) = v.get("qr_detect").and_then(|x| x.as_bool()) {
@@ -76,6 +84,12 @@ pub fn load_app() -> AppSettings {
             }
             if let Some(b) = v.get("qr_autodelete").and_then(|x| x.as_bool()) {
                 a.qr_autodelete = b;
+            }
+            if let Some(b) = v.get("skip_wrist_photo").and_then(|x| x.as_bool()) {
+                a.skip_wrist_photo = b;
+            }
+            if let Some(b) = v.get("skip_wrist_qr").and_then(|x| x.as_bool()) {
+                a.skip_wrist_qr = b;
             }
         }
     }
@@ -86,7 +100,12 @@ pub fn save_app(a: &AppSettings) {
     if let Some(dir) = Path::new(&a.path).parent() {
         let _ = fs::create_dir_all(dir);
     }
-    let v = serde_json::json!({ "qr_detect": a.qr_detect, "qr_autodelete": a.qr_autodelete });
+    let v = serde_json::json!({
+        "qr_detect": a.qr_detect,
+        "qr_autodelete": a.qr_autodelete,
+        "skip_wrist_photo": a.skip_wrist_photo,
+        "skip_wrist_qr": a.skip_wrist_qr,
+    });
     match serde_json::to_string_pretty(&v) {
         Ok(txt) => match fs::write(&a.path, txt) {
             Ok(()) => log::info!("wrote {} (qr_detect={} qr_autodelete={})", a.path, a.qr_detect, a.qr_autodelete),

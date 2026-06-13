@@ -47,6 +47,10 @@ Everything is driven by the controllers; there is no desktop window.
   a vision model that OCRs and translates any text to English, shown in the
   window (toggle back to the image any time). Requires `translate.env` (below);
   the button is hidden when it's not configured.
+- **Share** — uploads the screenshot to a [Picsur](https://github.com/CaramelFur/Picsur)
+  instance and copies the link to your clipboard. Requires `picsur.env` (below).
+- **Skip the wrist** — settings can open screenshots and/or QR codes **directly**
+  (photo window / link / text) instead of queuing a wrist notification.
 
 ## Translation (optional)
 
@@ -65,6 +69,19 @@ If `translate.env` is absent the feature is compiled out and the button hidden.
 The request runs on a background thread, so the overlay stays responsive while a
 large model thinks. QR detection and settings persist separately in
 `~/.config/monado-frame/config.json`.
+
+## Sharing (optional)
+
+The Share button uploads to a [Picsur](https://github.com/CaramelFur/Picsur)
+instance and copies the resulting link. Same build-time gating: copy
+`picsur.env.example` to `picsur.env`, set your instance + API key, and rebuild.
+
+```ini
+base_url=https://picsur.example.com
+api_key=your-picsur-api-key
+```
+
+The link is `<base_url>/i/<id>.png`. Absent `picsur.env` => button hidden.
 
 ## Environment
 

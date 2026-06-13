@@ -27,23 +27,23 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={out_dir}");
 
-    // Translation config (optional). If `translate.env` exists in the project
-    // root, bake its KEY=value lines into the binary so the Ollama endpoint is
-    // set at build time — no in-VR UI. Absent file => translation disabled.
-    println!("cargo:rerun-if-changed=translate.env");
-    if let Ok(txt) = std::fs::read_to_string("translate.env") {
-        for line in txt.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some((k, v)) = line.split_once('=') {
-                let env = match k.trim() {
-                    "base_url" => "MF_TRANSLATE_BASE_URL",
-                    "model" => "MF_TRANSLATE_MODEL",
-                    "api_key" => "MF_TRANSLATE_API_KEY",
-                    _ => continue,
-                };
+    // Optional feature config baked in at build time from project-root .env
+    // files (KEY=value), so endpoints/keys are never typed in VR. Absent file =>
+    // feature disabled.
+    bake_env("translate.env", &[("base_url", "MF_TRANSLATE_BASE_URL"), ("model", "MF_TRANSLATE_MODEL"), ("api_key", "MF_TRANSLATE_API_KEY")]);
+    bake_env("picsur.env", &[("base_url", "MF_PICSUR_BASE_URL"), ("api_key", "MF_PICSUR_API_KEY")]);
+}
+
+fn bake_env(file: &str, keys: &[(&str, &str)]) {
+    println!("cargo:rerun-if-changed={file}");
+    let Ok(txt) = std::fs::read_to_string(file) else { return };
+    for line in txt.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once('=') {
+            if let Some((_, env)) = keys.iter().find(|(name, _)| *name == k.trim()) {
                 println!("cargo:rustc-env={env}={}", v.trim());
             }
         }

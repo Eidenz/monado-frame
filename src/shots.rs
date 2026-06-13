@@ -15,6 +15,7 @@ pub enum PhotoAction {
     Dismiss,
     Translate,
     ToggleView,
+    Share,
 }
 
 /// All *.png in `dir`, newest first, with modified times.

@@ -6,6 +6,7 @@
 
 mod config;
 mod mathx;
+mod picsur;
 mod shots;
 mod translate;
 
@@ -174,6 +175,13 @@ fn build_settings(
             ui.add_space(16.0);
             ui.separator();
             ui.add_space(10.0);
+            ui.label(egui::RichText::new(format!("{}  Notifications", icons::BELL)).color(theme::ON_SURFACE_VAR));
+            ui.add_space(4.0);
+            *app_changed |= ui.checkbox(&mut app.skip_wrist_photo, "Open screenshots directly (skip wrist)").changed();
+            *app_changed |= ui.checkbox(&mut app.skip_wrist_qr, "Open QR codes directly (skip wrist)").changed();
+            ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(10.0);
             ui.vertical_centered(|ui| {
                 let label = egui::RichText::new(format!("{}  Open gallery", icons::IMAGES)).color(egui::Color32::BLACK);
                 if ui.add(egui::Button::new(label).fill(theme::PRIMARY)).clicked() {
@@ -194,6 +202,9 @@ fn build_photo(
     show_text: bool,
     translating: bool,
     translate_ok: bool,
+    sharing: bool,
+    share_ok: bool,
+    share_msg: Option<&str>,
     when: &str,
     action: &mut PhotoAction,
     alpha: u8,
@@ -201,8 +212,9 @@ fn build_photo(
     use egui_phosphor::regular as icons;
     let has_img = tex.is_some();
     let has_text = text.is_some();
+    let busy = translating || sharing;
     // Show text when asked, or when there's no image to show (a QR text panel).
-    let showing_text = !translating && has_text && (show_text || !has_img);
+    let showing_text = !busy && has_text && (show_text || !has_img);
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
         panel_card(ui, alpha, |ui| {
             let title = if showing_text && has_img {
@@ -214,14 +226,15 @@ fn build_photo(
             };
             header(ui, title, Some(when.to_string()));
 
-            // Reserve the action row at the bottom; the body fills the rest.
-            let footer_h = 48.0;
+            // Reserve the action row (and any share status) at the bottom.
+            let footer_h = if share_msg.is_some() { 72.0 } else { 48.0 };
             let body_h = (ui.available_height() - footer_h).max(40.0);
             ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
-                if translating {
+                if busy {
+                    let label = if translating { "  Translating…" } else { "  Uploading…" };
                     ui.centered_and_justified(|ui| {
                         ui.add(egui::Spinner::new().size(36.0));
-                        ui.label(egui::RichText::new("  Translating…").color(theme::ON_SURFACE_VAR));
+                        ui.label(egui::RichText::new(label).color(theme::ON_SURFACE_VAR));
                     });
                 } else if showing_text {
                     let txt = text.unwrap_or("");
@@ -240,6 +253,10 @@ fn build_photo(
                 }
             });
 
+            if let Some(msg) = share_msg {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(msg).size(14.0).color(theme::PRIMARY));
+            }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui.button(format!("{}  Copy", icons::COPY)).clicked() {
@@ -249,8 +266,8 @@ fn build_photo(
                 if has_img && ui.button(format!("{}  Delete", icons::TRASH)).clicked() {
                     *action = PhotoAction::Delete;
                 }
-                // Translate a screenshot, or flip between image and translation.
-                if has_img && !translating {
+                if has_img && !busy {
+                    // Translate a screenshot, or flip between image and translation.
                     if has_text {
                         let label = if showing_text { format!("{}  Image", icons::IMAGE) } else { format!("{}  Text", icons::TEXT_T) };
                         if ui.button(label).clicked() {
@@ -258,6 +275,10 @@ fn build_photo(
                         }
                     } else if translate_ok && ui.button(format!("{}  Translate", icons::TRANSLATE)).clicked() {
                         *action = PhotoAction::Translate;
+                    }
+                    // Upload to Picsur and copy the link.
+                    if share_ok && ui.button(format!("{}  Share", icons::LINK)).clicked() {
+                        *action = PhotoAction::Share;
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -465,6 +486,8 @@ struct PhotoSlot {
     text: Option<String>, // translation result or QR payload
     show_text: bool,      // image vs text view (when both exist)
     translating: bool,    // a translation request is in flight
+    sharing: bool,        // a Picsur upload is in flight
+    share_msg: Option<String>, // last share result (link copied / error)
     when: String,
 }
 
@@ -475,6 +498,8 @@ fn close_slot(s: &mut PhotoSlot) {
     s.text = None;
     s.show_text = false;
     s.translating = false;
+    s.sharing = false;
+    s.share_msg = None;
     s.when.clear();
 }
 
@@ -494,6 +519,8 @@ fn open_photo(pool: &mut [PhotoSlot], path: &Path, when: &str, hmd: Option<xr::P
             s.text = None;
             s.show_text = false;
             s.translating = false;
+            s.sharing = false;
+            s.share_msg = None;
             s.when = when.to_string();
             s.open = true;
             if let Some(h) = hmd {
@@ -514,6 +541,8 @@ fn open_text(pool: &mut [PhotoSlot], text: &str, when: &str, hmd: Option<xr::Pos
     s.text = Some(text.to_string());
     s.show_text = true;
     s.translating = false;
+    s.sharing = false;
+    s.share_msg = None;
     s.when = when.to_string();
     s.open = true;
     if let Some(h) = hmd {
@@ -537,13 +566,22 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-type TranslateMsg = (usize, PathBuf, Result<String, String>);
+type AsyncMsg = (usize, PathBuf, Result<String, String>);
 
 // Translate `path` on a background thread (a vision model can take many
 // seconds); the result is delivered to the render loop via `tx`.
-fn spawn_translate(tx: std::sync::mpsc::Sender<TranslateMsg>, slot: usize, path: PathBuf) {
+fn spawn_translate(tx: std::sync::mpsc::Sender<AsyncMsg>, slot: usize, path: PathBuf) {
     std::thread::spawn(move || {
         let res = translate::translate_image(&path);
+        let _ = tx.send((slot, path, res));
+    });
+}
+
+// Upload `path` to Picsur on a background thread; the share URL (or error) is
+// delivered to the render loop via `tx`.
+fn spawn_share(tx: std::sync::mpsc::Sender<AsyncMsg>, slot: usize, path: PathBuf) {
+    std::thread::spawn(move || {
+        let res = picsur::upload(&path);
         let _ = tx.send((slot, path, res));
     });
 }
@@ -1043,26 +1081,40 @@ fn run() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("gpu-allocator init: {e}"))?,
     ));
 
-    let mut settings_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (760, 720), (0.40, 0.40 * 720.0 / 760.0), posef([-0.38, 0.0, -1.0]))?;
+    let mut settings_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (760, 860), (0.40, 0.40 * 860.0 / 760.0), posef([-0.38, 0.0, -1.0]))?;
     let mut gallery_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (1120, 900), (0.66, 0.66 * 900.0 / 1120.0), posef([0.0, 0.0, -1.0]))?;
     let mut wrist_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (400, 260), (0.11, 0.11 * 260.0 / 400.0), posef([0.0, 0.0, -1.0]))?;
     let mut photo_pool: Vec<PhotoSlot> = Vec::new();
     for _ in 0..3 {
         let gfx = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (900, 820), (0.52, 0.52 * 820.0 / 900.0), posef([0.0, 0.0, -1.0]))?;
-        photo_pool.push(PhotoSlot { gfx, open: false, photo: None, path: None, text: None, show_text: false, translating: false, when: String::new() });
+        photo_pool.push(PhotoSlot {
+            gfx,
+            open: false,
+            photo: None,
+            path: None,
+            text: None,
+            show_text: false,
+            translating: false,
+            sharing: false,
+            share_msg: None,
+            when: String::new(),
+        });
     }
     let mut laser = make_laser(&session, format)?;
 
     let mut settings = config::load();
     let mut app = config::load_app();
     let translate_ok = translate::configured();
-    let (translate_tx, translate_rx) = std::sync::mpsc::channel::<TranslateMsg>();
+    let share_ok = picsur::configured();
+    let (translate_tx, translate_rx) = std::sync::mpsc::channel::<AsyncMsg>();
+    let (share_tx, share_rx) = std::sync::mpsc::channel::<AsyncMsg>();
     log::info!(
-        "loaded settings: enabled={} hold_ms={} qr_detect={} translate={}",
+        "loaded settings: enabled={} hold_ms={} qr_detect={} translate={} share={}",
         settings.enabled,
         settings.hold_ms,
         app.qr_detect,
-        translate_ok
+        translate_ok,
+        share_ok
     );
 
     // Actions
@@ -1171,9 +1223,10 @@ fn run() -> Result<()> {
             continue;
         }
         let time = frame_state.predicted_display_time;
+        let hmd = locate_pose(&view_space, &space, time);
 
-        // Watch for new screenshots (~1 Hz). Each new one becomes a wrist
-        // notification (a thumbnail + date), queued newest-first.
+        // Watch for new screenshots (~1 Hz). Each becomes a wrist notification,
+        // unless the matching "skip wrist" setting opens it directly.
         if last_scan.elapsed().as_secs_f32() > 1.0 {
             last_scan = Instant::now();
             let all = shots::scan_all(&screenshots_dir);
@@ -1182,6 +1235,7 @@ fn run() -> Result<()> {
             if let Some((_, m)) = all.first() {
                 newest_seen = Some(*m);
             }
+            let mut added = false;
             for path in fresh.iter().rev() {
                 let when = shots::shot_time(path);
                 let qr = if app.qr_detect { shots::decode_qr(path) } else { None };
@@ -1190,24 +1244,36 @@ fn run() -> Result<()> {
                     if app.qr_autodelete {
                         let _ = fs::remove_file(path);
                     }
-                    pending.insert(0, Pending { path: path.clone(), when, thumb: None, qr: Some(content) });
+                    if app.skip_wrist_qr {
+                        // Act on the code immediately, no wrist notification.
+                        if content.starts_with("http://") || content.starts_with("https://") {
+                            open_url(&content);
+                        } else {
+                            open_text(&mut photo_pool, &content, &when, hmd);
+                        }
+                    } else {
+                        pending.insert(0, Pending { path: path.clone(), when, thumb: None, qr: Some(content) });
+                        added = true;
+                    }
+                } else if app.skip_wrist_photo {
+                    // Open the screenshot panel immediately, no wrist notification.
+                    open_photo(&mut photo_pool, path, &when, hmd);
                 } else {
                     match shots::load_thumb(&wrist_panel.ctx, path, 256) {
                         Ok(thumb) => {
                             log::info!("new screenshot pending: {}", path.display());
                             pending.insert(0, Pending { path: path.clone(), when, thumb: Some(thumb), qr: None });
+                            added = true;
                         }
                         Err(e) => log::warn!("thumb {path:?}: {e}"),
                     }
                 }
             }
-            if !fresh.is_empty() {
+            if added {
                 pending.truncate(MAX_PENDING);
                 pending_idx = 0; // show the newest
             }
         }
-
-        let hmd = locate_pose(&view_space, &space, time);
 
         // Pointer + grab + laser ray.
         type Ptr = Option<(f32, f32, bool)>;
@@ -1436,6 +1502,20 @@ fn run() -> Result<()> {
             }
         }
 
+        // Apply any finished Picsur uploads: copy the link, show the result.
+        while let Ok((i, path, res)) = share_rx.try_recv() {
+            if i < photo_pool.len() && photo_pool[i].open && photo_pool[i].path.as_deref() == Some(path.as_path()) {
+                photo_pool[i].sharing = false;
+                photo_pool[i].share_msg = Some(match res {
+                    Ok(url) => {
+                        shots::copy_text_to_clipboard(&url);
+                        format!("{}  Link copied: {}", egui_phosphor::regular::CHECK, truncate(&url, 40))
+                    }
+                    Err(e) => format!("Share failed: {e}"),
+                });
+            }
+        }
+
         // Render each open floating photo panel + handle its actions.
         for i in 0..photo_pool.len() {
             if !photo_pool[i].open {
@@ -1446,10 +1526,12 @@ fn run() -> Result<()> {
             let text = photo_pool[i].text.clone();
             let show_text = photo_pool[i].show_text;
             let translating = photo_pool[i].translating;
+            let sharing = photo_pool[i].sharing;
+            let share_msg = photo_pool[i].share_msg.clone();
             let when = photo_pool[i].when.clone();
             let ptr = ptr_photo[i];
             render_panel(&mut photo_pool[i].gfx, &device, cmd, cmd_pool, queue, fence, alpha_mode, ptr, |ctx| {
-                build_photo(ctx, tex.as_ref(), text.as_deref(), show_text, translating, translate_ok, &when, &mut paction, panel_alpha);
+                build_photo(ctx, tex.as_ref(), text.as_deref(), show_text, translating, translate_ok, sharing, share_ok, share_msg.as_deref(), &when, &mut paction, panel_alpha);
             })?;
             photo_rendered[i] = true;
             match paction {
@@ -1458,6 +1540,14 @@ fn run() -> Result<()> {
                         photo_pool[i].translating = true;
                         spawn_translate(translate_tx.clone(), i, p);
                         log::info!("translating slot {i}");
+                    }
+                }
+                PhotoAction::Share => {
+                    if let Some(p) = photo_pool[i].path.clone() {
+                        photo_pool[i].sharing = true;
+                        photo_pool[i].share_msg = None;
+                        spawn_share(share_tx.clone(), i, p);
+                        log::info!("sharing slot {i}");
                     }
                 }
                 PhotoAction::ToggleView => photo_pool[i].show_text = !photo_pool[i].show_text,
