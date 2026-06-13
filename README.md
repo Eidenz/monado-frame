@@ -1,9 +1,9 @@
 # monado-frame
 
 An **in-headset overlay** for Monado — review screenshots and configure the
-finger-frame gesture, with no desktop UI. It's a standalone OpenXR overlay app
+finger-frame gesture. It's a standalone OpenXR overlay app
 (`XR_EXTX_overlay`), like [WayVR](https://github.com/galister/wayvr), and a
-companion to the gesture/screenshot features in the Monado fork.
+companion to the gesture/screenshot features in my Monado fork.
 
 It stays fully decoupled from `monado-service` through two files:
 
@@ -47,7 +47,7 @@ Everything is driven by the controllers; there is no desktop window.
 | `MONADO_FRAME_OPACITY` | `0.92` | Panel glass opacity (0–1). |
 | `MONADO_FRAME_NO_ALPHA` | unset | Set to disable alpha blending (opaque rectangular panels) if glass looks wrong. |
 | `MONADO_FRAME_NO_LASER` | unset | Set to disable the 3D laser pointer. |
-| `MONADO_FRAME_WRIST_POS` | `-0.05,0.01,0.05` | Watch position offset `x,y,z` (metres) from the left grip pose. |
+| `MONADO_FRAME_WRIST_POS` | `-0.04,-0.005,0.05` | Watch position offset `x,y,z` (metres) from the left grip pose. |
 | `MONADO_FRAME_WRIST_ROT` | `90,180,63` | Hand-locked orientation `yaw,pitch,roll` (degrees). |
 | `MONADO_FRAME_WRIST_FOV` | `35` | Reveal half-angle (degrees): the card shows while its face points within this of your head. |
 
