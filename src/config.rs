@@ -4,6 +4,7 @@ use std::{env, fs, path::Path};
 pub struct Settings {
     pub enabled: bool,
     pub hold_ms: i32,
+    pub frame_feedback: bool,
     pub debug: bool,
     pub path: String,
     pub dirty: bool,
@@ -19,7 +20,14 @@ pub fn config_path() -> String {
 
 pub fn load() -> Settings {
     let path = config_path();
-    let mut s = Settings { enabled: true, hold_ms: 2000, debug: false, path: path.clone(), dirty: false };
+    let mut s = Settings {
+        enabled: true,
+        hold_ms: 2000,
+        frame_feedback: true,
+        debug: false,
+        path: path.clone(),
+        dirty: false,
+    };
     if let Ok(txt) = fs::read_to_string(&path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
             if let Some(b) = v.get("enabled").and_then(|x| x.as_bool()) {
@@ -27,6 +35,9 @@ pub fn load() -> Settings {
             }
             if let Some(n) = v.get("hold_ms").and_then(|x| x.as_i64()) {
                 s.hold_ms = n as i32;
+            }
+            if let Some(b) = v.get("frame_feedback").and_then(|x| x.as_bool()) {
+                s.frame_feedback = b;
             }
             if let Some(b) = v.get("debug").and_then(|x| x.as_bool()) {
                 s.debug = b;
@@ -40,7 +51,7 @@ pub fn save(s: &Settings) {
     if let Some(dir) = Path::new(&s.path).parent() {
         let _ = fs::create_dir_all(dir);
     }
-    let v = serde_json::json!({ "enabled": s.enabled, "hold_ms": s.hold_ms, "debug": s.debug });
+    let v = serde_json::json!({ "enabled": s.enabled, "hold_ms": s.hold_ms, "frame_feedback": s.frame_feedback, "debug": s.debug });
     match serde_json::to_string_pretty(&v) {
         Ok(txt) => match fs::write(&s.path, txt) {
             Ok(()) => log::info!("wrote {} (enabled={} hold_ms={})", s.path, s.enabled, s.hold_ms),
