@@ -4,6 +4,7 @@
 // gesture settings panel and a screenshot-review panel — plus a controller
 // laser pointer. See config.rs / shots.rs / mathx.rs for the split-out bits.
 
+mod blocker;
 mod config;
 mod mathx;
 mod picsur;
@@ -140,55 +141,96 @@ fn paint_corner_brackets(painter: &egui::Painter, r: egui::Rect, len: f32, strok
     painter.line_segment([r.right_bottom(), r.right_bottom() + vec2(0.0, -len)], stroke);
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum SettingsTab {
+    Gesture,
+    Qr,
+    Notifications,
+    Gallery,
+    About,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_settings(
     ctx: &egui::Context,
     s: &mut Settings,
     app: &mut AppSettings,
+    tab: &mut SettingsTab,
     changed: &mut bool,
     app_changed: &mut bool,
     open_gallery: &mut bool,
+    translate_ok: bool,
+    share_ok: bool,
     alpha: u8,
 ) {
     use egui_phosphor::regular as icons;
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
         panel_card(ui, alpha, |ui| {
-            header(ui, format!("{}  monado-frame", icons::GEAR_SIX), None);
-            ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new("Finger-frame gesture").color(theme::ON_SURFACE_VAR));
-            });
-            ui.add_space(12.0);
-            *changed |= ui.checkbox(&mut s.enabled, "Gesture enabled").changed();
-            ui.add_space(14.0);
-            ui.label(egui::RichText::new("Hold delay").color(theme::ON_SURFACE_VAR));
-            ui.add_space(4.0);
-            *changed |= ui.add(egui::Slider::new(&mut s.hold_ms, 500..=4000).suffix(" ms")).changed();
-            ui.add_space(16.0);
-            ui.separator();
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new(format!("{}  QR codes", icons::QR_CODE)).color(theme::ON_SURFACE_VAR));
-            ui.add_space(4.0);
-            *app_changed |= ui.checkbox(&mut app.qr_detect, "Detect QR codes in screenshots").changed();
-            ui.add_enabled_ui(app.qr_detect, |ui| {
-                *app_changed |= ui.checkbox(&mut app.qr_autodelete, "Delete the screenshot, keep only the code").changed();
-            });
-            ui.add_space(16.0);
-            ui.separator();
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new(format!("{}  Notifications", icons::BELL)).color(theme::ON_SURFACE_VAR));
-            ui.add_space(4.0);
-            *app_changed |= ui.checkbox(&mut app.skip_wrist_photo, "Open screenshots directly (skip wrist)").changed();
-            *app_changed |= ui.checkbox(&mut app.skip_wrist_qr, "Open QR codes directly (skip wrist)").changed();
-            ui.add_space(16.0);
-            ui.separator();
-            ui.add_space(10.0);
-            ui.vertical_centered(|ui| {
-                let label = egui::RichText::new(format!("{}  Open gallery", icons::IMAGES)).color(egui::Color32::BLACK);
-                if ui.add(egui::Button::new(label).fill(theme::PRIMARY)).clicked() {
-                    *open_gallery = true;
-                }
-                ui.add_space(8.0);
-                ui.small(egui::RichText::new(&s.path).color(theme::ON_SURFACE_VAR));
+            ui.horizontal_top(|ui| {
+                // Left nav: a sidebar of tabs.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(190.0, ui.available_height()),
+                    egui::Layout::top_down_justified(egui::Align::LEFT),
+                    |ui| {
+                        ui.label(egui::RichText::new(format!("{}  monado-frame", icons::GEAR_SIX)).strong().size(18.0).color(egui::Color32::WHITE));
+                        ui.add_space(12.0);
+                        ui.selectable_value(&mut *tab, SettingsTab::Gesture, format!("{}  Gesture", icons::HAND_POINTING));
+                        ui.selectable_value(&mut *tab, SettingsTab::Qr, format!("{}  QR codes", icons::QR_CODE));
+                        ui.selectable_value(&mut *tab, SettingsTab::Notifications, format!("{}  Notifications", icons::BELL));
+                        ui.selectable_value(&mut *tab, SettingsTab::Gallery, format!("{}  Gallery", icons::IMAGES));
+                        ui.selectable_value(&mut *tab, SettingsTab::About, format!("{}  About", icons::INFO));
+                    },
+                );
+                ui.separator();
+                // Right: the active tab's content.
+                ui.vertical(|ui| match *tab {
+                    SettingsTab::Gesture => {
+                        header(ui, "Finger-frame gesture".to_string(), None);
+                        *changed |= ui.checkbox(&mut s.enabled, "Gesture enabled").changed();
+                        ui.add_space(14.0);
+                        ui.label(egui::RichText::new("Hold delay").color(theme::ON_SURFACE_VAR));
+                        ui.add_space(4.0);
+                        *changed |= ui.add(egui::Slider::new(&mut s.hold_ms, 500..=4000).suffix(" ms")).changed();
+                    }
+                    SettingsTab::Qr => {
+                        header(ui, "QR codes".to_string(), None);
+                        *app_changed |= ui.checkbox(&mut app.qr_detect, "Detect QR codes in screenshots").changed();
+                        ui.add_space(8.0);
+                        ui.add_enabled_ui(app.qr_detect, |ui| {
+                            *app_changed |= ui.checkbox(&mut app.qr_autodelete, "Delete the screenshot, keep only the code").changed();
+                        });
+                    }
+                    SettingsTab::Notifications => {
+                        header(ui, "Notifications".to_string(), None);
+                        *app_changed |= ui.checkbox(&mut app.skip_wrist_photo, "Open screenshots directly (skip wrist)").changed();
+                        ui.add_space(8.0);
+                        *app_changed |= ui.checkbox(&mut app.skip_wrist_qr, "Open QR codes directly (skip wrist)").changed();
+                        ui.add_space(8.0);
+                        *app_changed |= ui.checkbox(&mut app.block_game_input, "Block game input while using panels").changed();
+                    }
+                    SettingsTab::Gallery => {
+                        header(ui, "Gallery".to_string(), None);
+                        let label = egui::RichText::new(format!("{}  Open gallery", icons::IMAGES)).color(egui::Color32::BLACK);
+                        if ui.add(egui::Button::new(label).fill(theme::PRIMARY)).clicked() {
+                            *open_gallery = true;
+                        }
+                        ui.add_space(16.0);
+                        ui.label(egui::RichText::new("Auto-cleanup").color(theme::ON_SURFACE_VAR));
+                        ui.add_space(4.0);
+                        *app_changed |= ui.add(egui::Slider::new(&mut app.cleanup_days, 0..=90).suffix(" days")).changed();
+                        ui.small(egui::RichText::new("Delete old screenshots on launch (0 = keep forever)").color(theme::ON_SURFACE_VAR));
+                    }
+                    SettingsTab::About => {
+                        header(ui, "About".to_string(), None);
+                        let yn = |b: bool| if b { "configured" } else { "not configured" };
+                        ui.label(egui::RichText::new(format!("{}  Translation: {}", icons::TRANSLATE, yn(translate_ok))).color(theme::ON_SURFACE_VAR));
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(format!("{}  Sharing: {}", icons::SHARE_FAT, yn(share_ok))).color(theme::ON_SURFACE_VAR));
+                        ui.add_space(12.0);
+                        ui.small(egui::RichText::new("Gesture config:").color(theme::ON_SURFACE_VAR));
+                        ui.small(egui::RichText::new(&s.path).color(theme::ON_SURFACE_VAR));
+                    }
+                });
             });
         });
     });
@@ -276,8 +318,8 @@ fn build_photo(
                     } else if translate_ok && ui.button(format!("{}  Translate", icons::TRANSLATE)).clicked() {
                         *action = PhotoAction::Translate;
                     }
-                    // Upload to Picsur and copy the link.
-                    if share_ok && ui.button(format!("{}  Share", icons::LINK)).clicked() {
+                    // Upload to Picsur and copy the link (icon-only to save room).
+                    if share_ok && ui.button(egui::RichText::new(icons::SHARE_FAT).size(18.0)).on_hover_text("Share").clicked() {
                         *action = PhotoAction::Share;
                     }
                 }
@@ -316,6 +358,7 @@ enum GalleryAction {
     None,
     Close,
     Open(usize),
+    Delete(usize),
     PrevPage,
     NextPage,
 }
@@ -442,7 +485,14 @@ fn build_gallery(
                         if ui.add(egui::ImageButton::new(img).frame(false)).clicked() {
                             *action = GalleryAction::Open(k);
                         }
-                        ui.small(egui::RichText::new(when).color(theme::ON_SURFACE_VAR));
+                        ui.horizontal(|ui| {
+                            ui.small(egui::RichText::new(when).color(theme::ON_SURFACE_VAR));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.small_button(egui::RichText::new(icons::TRASH).color(theme::ON_SURFACE_VAR)).on_hover_text("Delete").clicked() {
+                                    *action = GalleryAction::Delete(k);
+                                }
+                            });
+                        });
                     });
                     if (k + 1) % COLS == 0 {
                         ui.end_row();
@@ -584,6 +634,12 @@ fn spawn_share(tx: std::sync::mpsc::Sender<AsyncMsg>, slot: usize, path: PathBuf
         let res = picsur::upload(&path);
         let _ = tx.send((slot, path, res));
     });
+}
+
+// A short haptic tick on the given hand (ignored if the controller is absent).
+fn pulse(session: &xr::Session<xr::Vulkan>, haptic: &xr::Action<xr::Haptic>, hand: xr::Path) {
+    let v = xr::HapticVibration::new().amplitude(0.4).frequency(0.0).duration(xr::Duration::from_nanos(25_000_000));
+    let _ = haptic.apply_feedback(session, hand, &v);
 }
 
 const GALLERY_PER: usize = 12; // thumbnails per gallery page
@@ -1081,7 +1137,7 @@ fn run() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("gpu-allocator init: {e}"))?,
     ));
 
-    let mut settings_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (760, 860), (0.40, 0.40 * 860.0 / 760.0), posef([-0.38, 0.0, -1.0]))?;
+    let mut settings_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (1080, 680), (0.56, 0.56 * 680.0 / 1080.0), posef([-0.38, 0.0, -1.0]))?;
     let mut gallery_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (1120, 900), (0.66, 0.66 * 900.0 / 1120.0), posef([0.0, 0.0, -1.0]))?;
     let mut wrist_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (400, 260), (0.11, 0.11 * 260.0 / 400.0), posef([0.0, 0.0, -1.0]))?;
     let mut photo_pool: Vec<PhotoSlot> = Vec::new();
@@ -1126,6 +1182,7 @@ fn run() -> Result<()> {
     let select_action = action_set.create_action::<f32>("select", "Select", &[left_path, right_path])?;
     let grab_action = action_set.create_action::<f32>("grab", "Grab", &[left_path, right_path])?;
     let system_action = action_set.create_action::<bool>("system", "System (show/hide)", &[left_path, right_path])?;
+    let haptic_action = action_set.create_action::<xr::Haptic>("haptic", "Haptic tick", &[left_path, right_path])?;
     let index_profile = xr_instance.string_to_path("/interaction_profiles/valve/index_controller")?;
     xr_instance.suggest_interaction_profile_bindings(
         index_profile,
@@ -1140,6 +1197,8 @@ fn run() -> Result<()> {
             xr::Binding::new(&grab_action, xr_instance.string_to_path("/user/hand/right/input/squeeze/force")?),
             xr::Binding::new(&system_action, xr_instance.string_to_path("/user/hand/left/input/system/click")?),
             xr::Binding::new(&system_action, xr_instance.string_to_path("/user/hand/right/input/system/click")?),
+            xr::Binding::new(&haptic_action, xr_instance.string_to_path("/user/hand/left/output/haptic")?),
+            xr::Binding::new(&haptic_action, xr_instance.string_to_path("/user/hand/right/output/haptic")?),
         ],
     )?;
     session.attach_action_sets(&[&action_set])?;
@@ -1166,6 +1225,10 @@ fn run() -> Result<()> {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("{}/Pictures/Monado", env::var("HOME").unwrap_or_default()));
     log::info!("watching {} for new screenshots", screenshots_dir);
+    let cleaned = shots::cleanup_old(&screenshots_dir, app.cleanup_days);
+    if cleaned > 0 {
+        log::info!("auto-cleanup removed {cleaned} screenshot(s) older than {} days", app.cleanup_days);
+    }
     let mut newest_seen = shots::scan_all(&screenshots_dir).first().map(|(_, m)| *m);
     let mut last_scan = Instant::now();
     const MAX_PENDING: usize = 6;
@@ -1173,13 +1236,19 @@ fn run() -> Result<()> {
     let mut pending_idx = 0usize;
     let mut grab: Option<(Target, usize, xr::Posef)> = None;
     let mut settings_visible = false; // summon with a SYSTEM double-press
+    let mut settings_tab = SettingsTab::Gesture;
     let mut gallery_visible = false;
     let mut gallery_paths: Vec<(PathBuf, String)> = Vec::new(); // all shots (path + date)
     let mut gallery_items: Vec<(egui::TextureHandle, String)> = Vec::new(); // current page
     let mut gallery_page = 0usize;
     let mut sys_prev = false;
     let mut last_sys_press: Option<Instant> = None;
+    let mut sys_active_prev = false; // tracks system action active flips (input (un)block)
+    let mut last_active_change: Option<Instant> = None;
     let mut wrist_shown = false; // reveal hysteresis state
+    let mut app_dirty = false; // app-config has unsaved edits (debounced save)
+    let mut prev_click = [false, false]; // per-hand select edge for haptic ticks
+    let mut input_blocker = blocker::Blocker::new(); // suppress game input over panels
 
     log::info!("monado-frame ready. Point to interact, grip (force) to move a panel; Ctrl-C to quit.");
 
@@ -1224,6 +1293,7 @@ fn run() -> Result<()> {
         }
         let time = frame_state.predicted_display_time;
         let hmd = locate_pose(&view_space, &space, time);
+        let mut notify_pulse = false; // a new screenshot was captured this frame
 
         // Watch for new screenshots (~1 Hz). Each becomes a wrist notification,
         // unless the matching "skip wrist" setting opens it directly.
@@ -1235,6 +1305,7 @@ fn run() -> Result<()> {
             if let Some((_, m)) = all.first() {
                 newest_seen = Some(*m);
             }
+            notify_pulse = !fresh.is_empty();
             let mut added = false;
             for path in fresh.iter().rev() {
                 let when = shots::shot_time(path);
@@ -1282,6 +1353,7 @@ fn run() -> Result<()> {
         let mut ptr_wrist: Ptr = None;
         let mut ptr_photo: [Ptr; 3] = [None, None, None];
         let mut wrist_ok = false; // wrist card has a valid follow pose this frame
+        let mut pointing_panel = false; // interacting with a panel → block game input
         let mut laser_ray: Option<(xr::Posef, f32)> = None;
         // Only submit a panel's quad if its swapchain was actually acquired+released
         // this frame; otherwise xrEndFrame rejects an un-released swapchain.
@@ -1292,6 +1364,11 @@ fn run() -> Result<()> {
         if focused {
             session.sync_actions(&[(&action_set).into()])?;
 
+            // Haptic tick on the left hand when a new screenshot is captured.
+            if notify_pulse {
+                pulse(&session, &haptic_action, left_path);
+            }
+
             // Double-press SYSTEM toggles panel visibility. A double tap of
             // right-system opens-then-closes WayVR (net no change) while
             // toggling ours once, so both can run without clashing.
@@ -1301,8 +1378,18 @@ fn run() -> Result<()> {
             // the settings panel on its own.
             let sl = system_action.state(&session, left_path)?;
             let sr = system_action.state(&session, right_path)?;
+            let sys_active = sl.is_active || sr.is_active;
             let sys_down = (sl.is_active && sl.current_state) || (sr.is_active && sr.current_state);
-            if sys_down && !sys_prev {
+            // Track when the action's active state flips. Another overlay (e.g.
+            // WayVR) blocking/unblocking our input as the cursor enters/leaves its
+            // panels flips `is_active`, which can fake a system press — so ignore
+            // edges for a moment around any such flip.
+            if sys_active != sys_active_prev {
+                sys_active_prev = sys_active;
+                last_active_change = Some(Instant::now());
+            }
+            let settled = last_active_change.is_none_or(|t| t.elapsed().as_millis() > 150);
+            if sys_down && !sys_prev && settled {
                 let now = Instant::now();
                 if last_sys_press.is_some_and(|t| now.duration_since(t).as_millis() < 400) {
                     settings_visible = !settings_visible;
@@ -1322,9 +1409,9 @@ fn run() -> Result<()> {
 
             let hands = [(left_path, &aim_left), (right_path, &aim_right)];
 
-            // The wrist card rides the left hand (grip pose) with a fixed
-            // hand-locked orientation, and shows only while its face is turned
-            // toward your head (turn your wrist to reveal it) within the FoV.
+            // The wrist card rides the left hand (grip pose), hand-locked, and
+            // shows only while shots are pending AND its face is turned toward
+            // your head (turn your wrist to reveal it) within the FoV.
             if !pending.is_empty() {
                 if let (Some(gp), Some(h)) = (locate_pose(&grip_left, &space, time), hmd) {
                     let at = pose_compose(&gp, &xr::Posef { orientation: quatf(wrist_rot), position: vec3f(wrist_offset_pos) });
@@ -1368,6 +1455,7 @@ fn run() -> Result<()> {
                     let held = grab_action.state(&session, path)?.current_state > GRAB_RELEASE;
                     match locate_pose(aim, &space, time) {
                         Some(pose) if held => {
+                            pointing_panel = true; // moving a panel counts as interacting
                             let np = pose_compose(&pose, &rel);
                             match target {
                                 Target::Settings => settings_panel.pose = np,
@@ -1393,7 +1481,13 @@ fn run() -> Result<()> {
                         }
                         if let Some((tgt, t, (u, v))) = best {
                             laser_ray = Some((pose, t));
+                            pointing_panel = true;
                             let down = select_action.state(&session, *path)?.current_state > 0.5;
+                            // Haptic tick on the press edge while pointing at a panel.
+                            if down && !prev_click[i] {
+                                pulse(&session, &haptic_action, *path);
+                            }
+                            prev_click[i] = down;
                             match tgt {
                                 // Hand-locked: click to open, never grab.
                                 Target::Wrist => ptr_wrist = Some((u, v, down)),
@@ -1418,11 +1512,16 @@ fn run() -> Result<()> {
                                     }
                                 }
                             }
+                        } else {
+                            prev_click[i] = false; // not pointing at a panel
                         }
                     }
                 }
             }
         }
+
+        // Suppress game input while a panel is being used (edge-triggered).
+        input_blocker.set(pointing_panel && app.block_game_input);
 
         let any_photo = photo_pool.iter().any(|s| s.open);
         if !settings_visible && !gallery_visible && !any_photo && !wrist_ok {
@@ -1436,7 +1535,7 @@ fn run() -> Result<()> {
             let mut app_changed = false;
             let mut open_gallery = false;
             render_panel(&mut settings_panel, &device, cmd, cmd_pool, queue, fence, alpha_mode, ptr_settings, |ctx| {
-                build_settings(ctx, &mut settings, &mut app, &mut changed, &mut app_changed, &mut open_gallery, panel_alpha);
+                build_settings(ctx, &mut settings, &mut app, &mut settings_tab, &mut changed, &mut app_changed, &mut open_gallery, translate_ok, share_ok, panel_alpha);
             })?;
             settings_rendered = true;
             let settings_down = ptr_settings.is_some_and(|(_, _, d)| d);
@@ -1447,7 +1546,11 @@ fn run() -> Result<()> {
                 settings.dirty = true;
             }
             if app_changed {
-                config::save_app(&app); // checkboxes are discrete events; save immediately
+                app_dirty = true;
+            }
+            if app_dirty && !settings_down {
+                config::save_app(&app); // debounced: save on release (the slider drags)
+                app_dirty = false;
             }
             if open_gallery && !gallery_visible {
                 gallery_visible = true;
@@ -1459,6 +1562,11 @@ fn run() -> Result<()> {
                 }
                 log::info!("gallery opened ({} shots)", gallery_paths.len());
             }
+        }
+        // Flush a pending app-config edit if settings closed before release.
+        if app_dirty && !settings_visible {
+            config::save_app(&app);
+            app_dirty = false;
         }
 
         // Render gallery + handle thumbnail clicks / paging.
@@ -1485,6 +1593,16 @@ fn run() -> Result<()> {
                     if let Some((path, when)) = gallery_paths.get(global).map(|(p, w)| (p.clone(), w.clone())) {
                         open_photo(&mut photo_pool, &path, &when, hmd);
                     }
+                }
+                GalleryAction::Delete(k) => {
+                    let global = gallery_page * GALLERY_PER + k;
+                    if let Some((path, _)) = gallery_paths.get(global) {
+                        let _ = fs::remove_file(path);
+                        log::info!("deleted {}", path.display());
+                    }
+                    gallery_paths = gallery_scan(&screenshots_dir);
+                    gallery_page = gallery_page.min(gallery_paths.len().saturating_sub(1) / GALLERY_PER);
+                    gallery_items = gallery_page_items(&gallery_panel.ctx, &gallery_paths, gallery_page);
                 }
                 GalleryAction::None => {}
             }

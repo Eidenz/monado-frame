@@ -57,6 +57,8 @@ pub struct AppSettings {
     pub qr_autodelete: bool,
     pub skip_wrist_photo: bool,
     pub skip_wrist_qr: bool,
+    pub cleanup_days: i32, // delete screenshots older than this on launch (0 = off)
+    pub block_game_input: bool, // suppress game input while pointing at a panel
     pub path: String,
 }
 
@@ -75,6 +77,8 @@ pub fn load_app() -> AppSettings {
         qr_autodelete: false,
         skip_wrist_photo: false,
         skip_wrist_qr: false,
+        cleanup_days: 0,
+        block_game_input: true,
         path: path.clone(),
     };
     if let Ok(txt) = fs::read_to_string(&path) {
@@ -91,6 +95,12 @@ pub fn load_app() -> AppSettings {
             if let Some(b) = v.get("skip_wrist_qr").and_then(|x| x.as_bool()) {
                 a.skip_wrist_qr = b;
             }
+            if let Some(n) = v.get("cleanup_days").and_then(|x| x.as_i64()) {
+                a.cleanup_days = n as i32;
+            }
+            if let Some(b) = v.get("block_game_input").and_then(|x| x.as_bool()) {
+                a.block_game_input = b;
+            }
         }
     }
     a
@@ -105,6 +115,8 @@ pub fn save_app(a: &AppSettings) {
         "qr_autodelete": a.qr_autodelete,
         "skip_wrist_photo": a.skip_wrist_photo,
         "skip_wrist_qr": a.skip_wrist_qr,
+        "cleanup_days": a.cleanup_days,
+        "block_game_input": a.block_game_input,
     });
     match serde_json::to_string_pretty(&v) {
         Ok(txt) => match fs::write(&a.path, txt) {

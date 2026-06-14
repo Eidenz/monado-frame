@@ -51,6 +51,17 @@ Everything is driven by the controllers; there is no desktop window.
   instance and copies the link to your clipboard. Requires `picsur.env` (below).
 - **Skip the wrist** — settings can open screenshots and/or QR codes **directly**
   (photo window / link / text) instead of queuing a wrist notification.
+- **Wrist launcher** — with nothing pending, glancing at your wrist shows a small
+  *monado-frame · Menu* card; the Menu button opens settings (same as the
+  double-press). New screenshots replace it with their notification.
+- **Haptics** — a short tick when you click a panel and when a screenshot is
+  captured.
+- **Input arbitration** — while you point at a panel, the game stops receiving
+  controller input (via libmonado), so clicking a button doesn't also fire in the
+  game. On by default (settings toggle); needs a Monado supporting libmonado IO
+  blocks (else it's a no-op). Stale blocks from a crash are cleared on next launch.
+- **Auto-cleanup** — a settings slider deletes screenshots older than N days on
+  launch (0 = keep forever). The gallery also has a per-thumbnail delete.
 
 ## Translation (optional)
 

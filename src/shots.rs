@@ -102,6 +102,24 @@ pub fn copy_text_to_clipboard(text: &str) {
     }
 }
 
+/// Delete screenshots older than `days` (no-op if days <= 0). Returns the count removed.
+pub fn cleanup_old(dir: &str, days: i32) -> usize {
+    if days <= 0 {
+        return 0;
+    }
+    let cutoff = match SystemTime::now().checked_sub(std::time::Duration::from_secs(days as u64 * 86_400)) {
+        Some(t) => t,
+        None => return 0,
+    };
+    let mut removed = 0;
+    for (path, mtime) in scan_all(dir) {
+        if mtime < cutoff && fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Decode the first QR code found in the image, if any.
 pub fn decode_qr(path: &Path) -> Option<String> {
     let img = image::open(path).ok()?.into_luma8();
