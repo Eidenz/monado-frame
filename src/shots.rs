@@ -37,8 +37,15 @@ pub fn scan_all(dir: &str) -> Vec<(PathBuf, SystemTime)> {
     v
 }
 
+// Max edge (px) for the in-VR photo texture; the file on disk stays full quality.
+const VIEW_MAX: u32 = 1600;
+
 pub fn load(ctx: &egui::Context, path: &Path) -> Result<Photo> {
-    let img = image::open(path)?.to_rgba8();
+    let mut img = image::open(path)?;
+    if img.width().max(img.height()) > VIEW_MAX {
+        img = img.resize(VIEW_MAX, VIEW_MAX, image::imageops::FilterType::Triangle);
+    }
+    let img = img.to_rgba8();
     let size = [img.width() as usize, img.height() as usize];
     let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
     let handle = ctx.load_texture("screenshot", color, egui::TextureOptions::LINEAR);
@@ -120,16 +127,68 @@ pub fn cleanup_old(dir: &str, days: i32) -> usize {
     removed
 }
 
-/// Decode the first QR code found in the image, if any.
-pub fn decode_qr(path: &Path) -> Option<String> {
-    let img = image::open(path).ok()?.into_luma8();
-    let mut prep = rqrr::PreparedImage::prepare(img);
-    for grid in prep.detect_grids() {
-        if let Ok((_meta, content)) = grid.decode() {
-            if !content.is_empty() {
-                return Some(content);
+pub enum ShotOutcome {
+    Qr(String),                 // a QR code was decoded (file maybe deleted)
+    Photo(egui::ColorImage),    // a normal photo: downscaled thumbnail pixels
+}
+
+/// Process a freshly-captured screenshot, meant to run OFF the render thread (a
+/// full-res PNG decode/encode is heavy). One decode: detect a QR (and optionally
+/// delete the file) → else crop the configured margin (fast PNG re-encode, mtime
+/// preserved so the watcher doesn't re-detect it) and return a thumbnail.
+pub fn process_new_shot(path: &Path, qr_detect: bool, qr_autodelete: bool, crop_pct: i32, thumb_max: u32) -> Result<ShotOutcome> {
+    let img = image::open(path)?;
+
+    if qr_detect {
+        let mut prep = rqrr::PreparedImage::prepare(img.to_luma8());
+        for grid in prep.detect_grids() {
+            if let Ok((_meta, content)) = grid.decode() {
+                if !content.is_empty() {
+                    if qr_autodelete {
+                        let _ = fs::remove_file(path);
+                    }
+                    return Ok(ShotOutcome::Qr(content));
+                }
             }
         }
     }
-    None
+
+    let img = maybe_crop(img, path, crop_pct);
+    let thumb = img.thumbnail(thumb_max, thumb_max).to_rgba8();
+    let size = [thumb.width() as usize, thumb.height() as usize];
+    Ok(ShotOutcome::Photo(egui::ColorImage::from_rgba_unmultiplied(size, thumb.as_raw())))
+}
+
+// Crop `pct` off each edge and overwrite the file (fast PNG, mtime preserved).
+// Returns the (possibly cropped) image for downstream thumbnailing.
+fn maybe_crop(img: image::DynamicImage, path: &Path, pct: i32) -> image::DynamicImage {
+    if pct <= 0 {
+        return img;
+    }
+    let m = pct.clamp(0, 45) as f32 / 100.0;
+    let (w, h) = (img.width(), img.height());
+    let (dx, dy) = ((w as f32 * m) as u32, (h as f32 * m) as u32);
+    let (cw, ch) = (w.saturating_sub(dx * 2), h.saturating_sub(dy * 2));
+    if cw == 0 || ch == 0 {
+        return img;
+    }
+    let cropped = img.crop_imm(dx, dy, cw, ch);
+    let mtime = fs::metadata(path).and_then(|md| md.modified()).ok();
+    if let Err(e) = save_png_fast(&cropped, path) {
+        log::warn!("crop save {path:?}: {e}");
+    } else if let Some(t) = mtime {
+        let _ = filetime::set_file_mtime(path, filetime::FileTime::from_system_time(t));
+    }
+    cropped
+}
+
+// Encode a PNG with fast compression — full-res re-encode is the slowest part of
+// cropping, and default compression would spike the CPU hard.
+fn save_png_fast(img: &image::DynamicImage, path: &Path) -> Result<()> {
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::ImageEncoder;
+    let file = std::io::BufWriter::new(fs::File::create(path)?);
+    let enc = PngEncoder::new_with_quality(file, CompressionType::Fast, FilterType::Adaptive);
+    enc.write_image(img.as_bytes(), img.width(), img.height(), img.color().into())?;
+    Ok(())
 }

@@ -144,6 +144,7 @@ fn paint_corner_brackets(painter: &egui::Painter, r: egui::Rect, len: f32, strok
 #[derive(Clone, Copy, PartialEq)]
 enum SettingsTab {
     Gesture,
+    Photo,
     Qr,
     Notifications,
     Gallery,
@@ -175,6 +176,7 @@ fn build_settings(
                         ui.label(egui::RichText::new(format!("{}  monado-frame", icons::GEAR_SIX)).strong().size(18.0).color(egui::Color32::WHITE));
                         ui.add_space(12.0);
                         ui.selectable_value(&mut *tab, SettingsTab::Gesture, format!("{}  Gesture", icons::HAND_POINTING));
+                        ui.selectable_value(&mut *tab, SettingsTab::Photo, format!("{}  Photo", icons::CAMERA));
                         ui.selectable_value(&mut *tab, SettingsTab::Qr, format!("{}  QR codes", icons::QR_CODE));
                         ui.selectable_value(&mut *tab, SettingsTab::Notifications, format!("{}  Notifications", icons::BELL));
                         ui.selectable_value(&mut *tab, SettingsTab::Gallery, format!("{}  Gallery", icons::IMAGES));
@@ -191,6 +193,13 @@ fn build_settings(
                         ui.label(egui::RichText::new("Hold delay").color(theme::ON_SURFACE_VAR));
                         ui.add_space(4.0);
                         *changed |= ui.add(egui::Slider::new(&mut s.hold_ms, 500..=4000).suffix(" ms")).changed();
+                    }
+                    SettingsTab::Photo => {
+                        header(ui, "Photo".to_string(), None);
+                        ui.label(egui::RichText::new("Crop margin").color(theme::ON_SURFACE_VAR));
+                        ui.add_space(4.0);
+                        *app_changed |= ui.add(egui::Slider::new(&mut app.crop_margin, 0..=25).suffix(" %")).changed();
+                        ui.small(egui::RichText::new("Trim this much off each edge of new shots (0 = off) — hides stray fingers from the frame.").color(theme::ON_SURFACE_VAR));
                     }
                     SettingsTab::Qr => {
                         header(ui, "QR codes".to_string(), None);
@@ -640,6 +649,22 @@ fn spawn_share(tx: std::sync::mpsc::Sender<AsyncMsg>, slot: usize, path: PathBuf
 fn pulse(session: &xr::Session<xr::Vulkan>, haptic: &xr::Action<xr::Haptic>, hand: xr::Path) {
     let v = xr::HapticVibration::new().amplitude(0.4).frequency(0.0).duration(xr::Duration::from_nanos(25_000_000));
     let _ = haptic.apply_feedback(session, hand, &v);
+}
+
+type ShotMsg = (PathBuf, String, shots::ShotOutcome);
+
+// Process a new screenshot (QR/crop/thumbnail decode — heavy at full res) off
+// the render thread; the result comes back via `tx`.
+fn spawn_process_shot(tx: std::sync::mpsc::Sender<ShotMsg>, path: PathBuf, qr_detect: bool, qr_autodelete: bool, crop: i32) {
+    std::thread::spawn(move || {
+        let when = shots::shot_time(&path);
+        match shots::process_new_shot(&path, qr_detect, qr_autodelete, crop, 256) {
+            Ok(outcome) => {
+                let _ = tx.send((path, when, outcome));
+            }
+            Err(e) => log::warn!("process shot {path:?}: {e}"),
+        }
+    });
 }
 
 const GALLERY_PER: usize = 12; // thumbnails per gallery page
@@ -1164,6 +1189,7 @@ fn run() -> Result<()> {
     let share_ok = picsur::configured();
     let (translate_tx, translate_rx) = std::sync::mpsc::channel::<AsyncMsg>();
     let (share_tx, share_rx) = std::sync::mpsc::channel::<AsyncMsg>();
+    let (shot_tx, shot_rx) = std::sync::mpsc::channel::<ShotMsg>();
     log::info!(
         "loaded settings: enabled={} hold_ms={} qr_detect={} translate={} share={}",
         settings.enabled,
@@ -1295,8 +1321,9 @@ fn run() -> Result<()> {
         let hmd = locate_pose(&view_space, &space, time);
         let mut notify_pulse = false; // a new screenshot was captured this frame
 
-        // Watch for new screenshots (~1 Hz). Each becomes a wrist notification,
-        // unless the matching "skip wrist" setting opens it directly.
+        // Watch for new screenshots (~1 Hz). Detect + hand off the heavy work
+        // (QR/crop/thumbnail decode) to a worker thread so the render never stalls;
+        // results are applied below as they arrive.
         if last_scan.elapsed().as_secs_f32() > 1.0 {
             last_scan = Instant::now();
             let all = shots::scan_all(&screenshots_dir);
@@ -1306,43 +1333,38 @@ fn run() -> Result<()> {
                 newest_seen = Some(*m);
             }
             notify_pulse = !fresh.is_empty();
-            let mut added = false;
-            for path in fresh.iter().rev() {
-                let when = shots::shot_time(path);
-                let qr = if app.qr_detect { shots::decode_qr(path) } else { None };
-                if let Some(content) = qr {
-                    log::info!("new screenshot has QR: {} -> {content}", path.display());
-                    if app.qr_autodelete {
-                        let _ = fs::remove_file(path);
-                    }
+            for path in fresh.into_iter().rev() {
+                log::info!("new screenshot: {}", path.display());
+                spawn_process_shot(shot_tx.clone(), path, app.qr_detect, app.qr_autodelete, app.crop_margin);
+            }
+        }
+
+        // Apply finished screenshot processing (off-thread) to the wrist queue.
+        while let Ok((path, when, outcome)) = shot_rx.try_recv() {
+            match outcome {
+                shots::ShotOutcome::Qr(content) => {
                     if app.skip_wrist_qr {
-                        // Act on the code immediately, no wrist notification.
                         if content.starts_with("http://") || content.starts_with("https://") {
                             open_url(&content);
                         } else {
                             open_text(&mut photo_pool, &content, &when, hmd);
                         }
                     } else {
-                        pending.insert(0, Pending { path: path.clone(), when, thumb: None, qr: Some(content) });
-                        added = true;
-                    }
-                } else if app.skip_wrist_photo {
-                    // Open the screenshot panel immediately, no wrist notification.
-                    open_photo(&mut photo_pool, path, &when, hmd);
-                } else {
-                    match shots::load_thumb(&wrist_panel.ctx, path, 256) {
-                        Ok(thumb) => {
-                            log::info!("new screenshot pending: {}", path.display());
-                            pending.insert(0, Pending { path: path.clone(), when, thumb: Some(thumb), qr: None });
-                            added = true;
-                        }
-                        Err(e) => log::warn!("thumb {path:?}: {e}"),
+                        pending.insert(0, Pending { path, when, thumb: None, qr: Some(content) });
+                        pending.truncate(MAX_PENDING);
+                        pending_idx = 0;
                     }
                 }
-            }
-            if added {
-                pending.truncate(MAX_PENDING);
-                pending_idx = 0; // show the newest
+                shots::ShotOutcome::Photo(color) => {
+                    let tex = wrist_panel.ctx.load_texture("thumb", color, egui::TextureOptions::LINEAR);
+                    if app.skip_wrist_photo {
+                        open_photo(&mut photo_pool, &path, &when, hmd);
+                    } else {
+                        pending.insert(0, Pending { path, when, thumb: Some(tex), qr: None });
+                        pending.truncate(MAX_PENDING);
+                        pending_idx = 0;
+                    }
+                }
             }
         }
 

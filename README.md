@@ -51,6 +51,9 @@ Everything is driven by the controllers; there is no desktop window.
   instance and copies the link to your clipboard. Requires `picsur.env` (below).
 - **Skip the wrist** — settings can open screenshots and/or QR codes **directly**
   (photo window / link / text) instead of queuing a wrist notification.
+- **Crop margin** — a settings slider silently trims a % off each edge of new
+  shots (hides stray fingers from a framed gesture). Done in monado-frame after
+  capture; Monado is untouched.
 - **Wrist launcher** — with nothing pending, glancing at your wrist shows a small
   *monado-frame · Menu* card; the Menu button opens settings (same as the
   double-press). New screenshots replace it with their notification.

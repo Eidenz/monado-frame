@@ -59,6 +59,7 @@ pub struct AppSettings {
     pub skip_wrist_qr: bool,
     pub cleanup_days: i32, // delete screenshots older than this on launch (0 = off)
     pub block_game_input: bool, // suppress game input while pointing at a panel
+    pub crop_margin: i32, // % trimmed off each edge of new framed shots (0 = off)
     pub path: String,
 }
 
@@ -79,6 +80,7 @@ pub fn load_app() -> AppSettings {
         skip_wrist_qr: false,
         cleanup_days: 0,
         block_game_input: true,
+        crop_margin: 0,
         path: path.clone(),
     };
     if let Ok(txt) = fs::read_to_string(&path) {
@@ -101,6 +103,9 @@ pub fn load_app() -> AppSettings {
             if let Some(b) = v.get("block_game_input").and_then(|x| x.as_bool()) {
                 a.block_game_input = b;
             }
+            if let Some(n) = v.get("crop_margin").and_then(|x| x.as_i64()) {
+                a.crop_margin = n as i32;
+            }
         }
     }
     a
@@ -117,6 +122,7 @@ pub fn save_app(a: &AppSettings) {
         "skip_wrist_qr": a.skip_wrist_qr,
         "cleanup_days": a.cleanup_days,
         "block_game_input": a.block_game_input,
+        "crop_margin": a.crop_margin,
     });
     match serde_json::to_string_pretty(&v) {
         Ok(txt) => match fs::write(&a.path, txt) {
