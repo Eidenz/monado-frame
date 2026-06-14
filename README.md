@@ -3,7 +3,7 @@
 An **in-headset overlay** for Monado — review screenshots and configure the
 finger-frame gesture. It's a standalone OpenXR overlay app
 (`XR_EXTX_overlay`), like [WayVR](https://github.com/galister/wayvr), and a
-companion to the gesture/screenshot features in my Monado fork.
+companion to the gesture/screenshot features in my [Monado fork](https://github.com/Eidenz/Monado).
 
 It stays fully decoupled from `monado-service` through two files:
 
@@ -28,9 +28,6 @@ Everything is driven by the controllers; there is no desktop window.
   to toggle it. Double-tapping right-SYSTEM opens-then-closes WayVR (net no
   change) while toggling this once, so the two coexist. It spawns in front of
   wherever you're looking.
-- **Point & click** — aim a controller at a panel; the trigger is the click.
-- **Move a panel** — point at it and squeeze the **grip** (force) to grab; it
-  rides your hand until you release.
 - **Screenshots** — a new shot queues a **notification card** on your left wrist
   (mini preview + date). It's hand-locked and only appears when you **turn your
   wrist so the card faces you**. Use ‹ › to scroll the queue; click the preview
@@ -49,20 +46,6 @@ Everything is driven by the controllers; there is no desktop window.
   the button is hidden when it's not configured.
 - **Share** — uploads the screenshot to a [Picsur](https://github.com/CaramelFur/Picsur)
   instance and copies the link to your clipboard. Requires `picsur.env` (below).
-- **Skip the wrist** — settings can open screenshots and/or QR codes **directly**
-  (photo window / link / text) instead of queuing a wrist notification.
-- **Crop margin** — a settings slider silently trims a % off each edge of new
-  shots (hides stray fingers from a framed gesture). Done in monado-frame after
-  capture; Monado is untouched.
-- **Wrist launcher** — with nothing pending, glancing at your wrist shows a small
-  *monado-frame · Menu* card; the Menu button opens settings (same as the
-  double-press). New screenshots replace it with their notification.
-- **Haptics** — a short tick when you click a panel and when a screenshot is
-  captured.
-- **Input arbitration** — while you point at a panel, the game stops receiving
-  controller input (via libmonado), so clicking a button doesn't also fire in the
-  game. On by default (settings toggle); needs a Monado supporting libmonado IO
-  blocks (else it's a no-op). Stale blocks from a crash are cleared on next launch.
 - **Auto-cleanup** — a settings slider deletes screenshots older than N days on
   launch (0 = keep forever). The gallery also has a per-thumbnail delete.
 
