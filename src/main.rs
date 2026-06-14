@@ -251,6 +251,7 @@ fn build_photo(
     tex: Option<&egui::TextureHandle>,
     text: Option<&str>,
     show_text: bool,
+    loading: bool,
     translating: bool,
     translate_ok: bool,
     sharing: bool,
@@ -263,7 +264,7 @@ fn build_photo(
     use egui_phosphor::regular as icons;
     let has_img = tex.is_some();
     let has_text = text.is_some();
-    let busy = translating || sharing;
+    let busy = translating || sharing || loading;
     // Show text when asked, or when there's no image to show (a QR text panel).
     let showing_text = !busy && has_text && (show_text || !has_img);
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
@@ -282,7 +283,13 @@ fn build_photo(
             let body_h = (ui.available_height() - footer_h).max(40.0);
             ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
                 if busy {
-                    let label = if translating { "  Translating…" } else { "  Uploading…" };
+                    let label = if translating {
+                        "  Translating…"
+                    } else if sharing {
+                        "  Uploading…"
+                    } else {
+                        "  Loading…"
+                    };
                     ui.centered_and_justified(|ui| {
                         ui.add(egui::Spinner::new().size(36.0));
                         ui.label(egui::RichText::new(label).color(theme::ON_SURFACE_VAR));
@@ -576,6 +583,7 @@ struct PhotoSlot {
     path: Option<PathBuf>,
     text: Option<String>, // translation result or QR payload
     show_text: bool,      // image vs text view (when both exist)
+    loading: bool,        // the photo is still decoding off-thread
     translating: bool,    // a translation request is in flight
     sharing: bool,        // a Picsur upload is in flight
     share_msg: Option<String>, // last share result (link copied / error)
@@ -588,6 +596,7 @@ fn close_slot(s: &mut PhotoSlot) {
     s.path = None;
     s.text = None;
     s.show_text = false;
+    s.loading = false;
     s.translating = false;
     s.sharing = false;
     s.share_msg = None;
@@ -599,28 +608,28 @@ fn free_slot(pool: &mut [PhotoSlot]) -> usize {
 }
 
 // Open `path` in a free pool slot (reusing slot 0 if all are taken), positioned
-// in front of the head and offset per slot so multiple windows don't stack.
-fn open_photo(pool: &mut [PhotoSlot], path: &Path, when: &str, hmd: Option<xr::Posef>) {
+// in front of the head. The image decode runs off-thread (a spinner shows until
+// it arrives via `tx`), so clicking a notification never stalls the render.
+fn open_photo(pool: &mut [PhotoSlot], path: &Path, when: &str, hmd: Option<xr::Posef>, tx: &std::sync::mpsc::Sender<PhotoLoadMsg>) {
     let slot = free_slot(pool);
-    match shots::load(&pool[slot].gfx.ctx, path) {
-        Ok(p) => {
-            let s = &mut pool[slot];
-            s.photo = Some(p);
-            s.path = Some(path.to_path_buf());
-            s.text = None;
-            s.show_text = false;
-            s.translating = false;
-            s.sharing = false;
-            s.share_msg = None;
-            s.when = when.to_string();
-            s.open = true;
-            if let Some(h) = hmd {
-                s.gfx.pose = front_pose(&h, 0.9, (slot as f32 - 1.0) * 0.34);
-            }
-            log::info!("opened photo in slot {slot}: {}", path.display());
+    {
+        let s = &mut pool[slot];
+        s.photo = None;
+        s.path = Some(path.to_path_buf());
+        s.text = None;
+        s.show_text = false;
+        s.loading = true;
+        s.translating = false;
+        s.sharing = false;
+        s.share_msg = None;
+        s.when = when.to_string();
+        s.open = true;
+        if let Some(h) = hmd {
+            s.gfx.pose = front_pose(&h, 0.9, (slot as f32 - 1.0) * 0.34);
         }
-        Err(e) => log::warn!("open photo {path:?}: {e}"),
     }
+    spawn_load_photo(tx.clone(), slot, path.to_path_buf());
+    log::info!("opening photo in slot {slot}: {}", path.display());
 }
 
 // Open text content (e.g. a non-URL QR payload) in a free pool slot.
@@ -631,6 +640,7 @@ fn open_text(pool: &mut [PhotoSlot], text: &str, when: &str, hmd: Option<xr::Pos
     s.path = None;
     s.text = Some(text.to_string());
     s.show_text = true;
+    s.loading = false;
     s.translating = false;
     s.sharing = false;
     s.share_msg = None;
@@ -681,6 +691,19 @@ fn spawn_share(tx: std::sync::mpsc::Sender<AsyncMsg>, slot: usize, path: PathBuf
 fn pulse(session: &xr::Session<xr::Vulkan>, haptic: &xr::Action<xr::Haptic>, hand: xr::Path) {
     let v = xr::HapticVibration::new().amplitude(0.4).frequency(0.0).duration(xr::Duration::from_nanos(25_000_000));
     let _ = haptic.apply_feedback(session, hand, &v);
+}
+
+type PhotoLoadMsg = (usize, PathBuf, egui::ColorImage);
+
+// Decode a photo for an open slot off the render thread; the pixels come back
+// via `tx` and are uploaded to that slot's egui context on the main thread.
+fn spawn_load_photo(tx: std::sync::mpsc::Sender<PhotoLoadMsg>, slot: usize, path: PathBuf) {
+    std::thread::spawn(move || match shots::load_image(&path) {
+        Ok(color) => {
+            let _ = tx.send((slot, path, color));
+        }
+        Err(e) => log::warn!("load photo {path:?}: {e}"),
+    });
 }
 
 type ShotMsg = (PathBuf, String, shots::ShotOutcome);
@@ -1216,6 +1239,7 @@ fn run() -> Result<()> {
             path: None,
             text: None,
             show_text: false,
+            loading: false,
             translating: false,
             sharing: false,
             share_msg: None,
@@ -1232,6 +1256,7 @@ fn run() -> Result<()> {
     let (share_tx, share_rx) = std::sync::mpsc::channel::<AsyncMsg>();
     let (shot_tx, shot_rx) = std::sync::mpsc::channel::<ShotMsg>();
     let (gallery_tx, gallery_rx) = std::sync::mpsc::channel::<GalleryMsg>();
+    let (photo_tx, photo_rx) = std::sync::mpsc::channel::<PhotoLoadMsg>();
     log::info!(
         "loaded settings: enabled={} hold_ms={} qr_detect={} translate={} share={}",
         settings.enabled,
@@ -1280,7 +1305,7 @@ fn run() -> Result<()> {
     // MONADO_FRAME_WRIST_POS="x,y,z" (metres, grip frame) places it.
     // MONADO_FRAME_WRIST_ROT="yaw,pitch,roll" (deg) sets its orientation.
     // MONADO_FRAME_WRIST_FOV=<deg> sets the reveal half-angle (default 35).
-    let wrist_offset_pos = env::var("MONADO_FRAME_WRIST_POS").ok().and_then(|s| parse3(&s)).unwrap_or([-0.04, -0.005, 0.05]);
+    let wrist_offset_pos = env::var("MONADO_FRAME_WRIST_POS").ok().and_then(|s| parse3(&s)).unwrap_or([-0.04, -0.01, 0.07]);
     let wrist_euler = env::var("MONADO_FRAME_WRIST_ROT").ok().and_then(|s| parse3(&s)).unwrap_or([90.0, 180.0, 63.0]);
     let wrist_rot = quat_from_euler_deg(wrist_euler[0], wrist_euler[1], wrist_euler[2]);
     let wrist_fov = env::var("MONADO_FRAME_WRIST_FOV").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(35.0);
@@ -1402,7 +1427,7 @@ fn run() -> Result<()> {
                 shots::ShotOutcome::Photo(color) => {
                     let tex = wrist_panel.ctx.load_texture("thumb", color, egui::TextureOptions::LINEAR);
                     if app.skip_wrist_photo {
-                        open_photo(&mut photo_pool, &path, &when, hmd);
+                        open_photo(&mut photo_pool, &path, &when, hmd, &photo_tx);
                     } else {
                         pending.insert(0, Pending { path, when, thumb: Some(tex), qr: None });
                         pending.truncate(MAX_PENDING);
@@ -1678,7 +1703,7 @@ fn run() -> Result<()> {
                 GalleryAction::Open(k) => {
                     let global = gallery_page * GALLERY_PER + k;
                     if let Some((path, when)) = gallery_paths.get(global).map(|(p, w)| (p.clone(), w.clone())) {
-                        open_photo(&mut photo_pool, &path, &when, hmd);
+                        open_photo(&mut photo_pool, &path, &when, hmd, &photo_tx);
                     }
                 }
                 GalleryAction::Delete(k) => {
@@ -1724,6 +1749,19 @@ fn run() -> Result<()> {
             }
         }
 
+        // Apply finished photo decodes (off-thread) to their slots.
+        while let Ok((slot, path, color)) = photo_rx.try_recv() {
+            if slot < photo_pool.len()
+                && photo_pool[slot].open
+                && photo_pool[slot].loading
+                && photo_pool[slot].path.as_deref() == Some(path.as_path())
+            {
+                let tex = photo_pool[slot].gfx.ctx.load_texture("screenshot", color, egui::TextureOptions::LINEAR);
+                photo_pool[slot].photo = Some(Photo { handle: tex });
+                photo_pool[slot].loading = false;
+            }
+        }
+
         // Render each open floating photo panel + handle its actions.
         for i in 0..photo_pool.len() {
             if !photo_pool[i].open {
@@ -1733,13 +1771,14 @@ fn run() -> Result<()> {
             let tex = photo_pool[i].photo.as_ref().map(|p| p.handle.clone());
             let text = photo_pool[i].text.clone();
             let show_text = photo_pool[i].show_text;
+            let loading = photo_pool[i].loading;
             let translating = photo_pool[i].translating;
             let sharing = photo_pool[i].sharing;
             let share_msg = photo_pool[i].share_msg.clone();
             let when = photo_pool[i].when.clone();
             let ptr = ptr_photo[i];
             render_panel(&mut photo_pool[i].gfx, &device, cmd, cmd_pool, queue, fence, alpha_mode, ptr, |ctx| {
-                build_photo(ctx, tex.as_ref(), text.as_deref(), show_text, translating, translate_ok, sharing, share_ok, share_msg.as_deref(), &when, &mut paction, panel_alpha);
+                build_photo(ctx, tex.as_ref(), text.as_deref(), show_text, loading, translating, translate_ok, sharing, share_ok, share_msg.as_deref(), &when, &mut paction, panel_alpha);
             })?;
             photo_rendered[i] = true;
             match paction {
@@ -1814,7 +1853,7 @@ fn run() -> Result<()> {
                             // URL QR → open it in the browser; text QR → text panel.
                             Some(c) if c.starts_with("http://") || c.starts_with("https://") => open_url(&c),
                             Some(c) => open_text(&mut photo_pool, &c, &when, hmd),
-                            None => open_photo(&mut photo_pool, &path, &when, hmd),
+                            None => open_photo(&mut photo_pool, &path, &when, hmd, &photo_tx),
                         }
                         pending.remove(pending_idx);
                         if pending_idx >= pending.len() {

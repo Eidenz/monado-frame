@@ -40,16 +40,17 @@ pub fn scan_all(dir: &str) -> Vec<(PathBuf, SystemTime)> {
 // Max edge (px) for the in-VR photo texture; the file on disk stays full quality.
 const VIEW_MAX: u32 = 1600;
 
-pub fn load(ctx: &egui::Context, path: &Path) -> Result<Photo> {
+// Decode the full photo, downscaled to VIEW_MAX for the VR texture (file stays
+// full quality). Returns raw pixels so it can run on a worker thread; the
+// texture upload happens on the main thread.
+pub fn load_image(path: &Path) -> Result<egui::ColorImage> {
     let mut img = image::open(path)?;
     if img.width().max(img.height()) > VIEW_MAX {
         img = img.resize(VIEW_MAX, VIEW_MAX, image::imageops::FilterType::Triangle);
     }
     let img = img.to_rgba8();
     let size = [img.width() as usize, img.height() as usize];
-    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-    let handle = ctx.load_texture("screenshot", color, egui::TextureOptions::LINEAR);
-    Ok(Photo { handle })
+    Ok(egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()))
 }
 
 /// Decode a downscaled preview (fits within `max` px) as raw pixels — no egui
