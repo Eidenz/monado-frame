@@ -193,6 +193,7 @@ fn build_settings(
                         ui.label(egui::RichText::new("Hold delay").color(theme::ON_SURFACE_VAR));
                         ui.add_space(4.0);
                         *changed |= ui.add(egui::Slider::new(&mut s.hold_ms, 500..=4000).suffix(" ms")).changed();
+                        ui.small(egui::RichText::new("How long to hold the frame before the viewfinder appears and capture arms. Then curl one index finger — like a shutter — to take the shot.").color(theme::ON_SURFACE_VAR));
                     }
                     SettingsTab::Photo => {
                         header(ui, "Photo".to_string(), None);
