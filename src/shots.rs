@@ -52,13 +52,13 @@ pub fn load(ctx: &egui::Context, path: &Path) -> Result<Photo> {
     Ok(Photo { handle })
 }
 
-/// Load a downscaled preview (fits within `max` px) as a texture in `ctx`.
-pub fn load_thumb(ctx: &egui::Context, path: &Path, max: u32) -> Result<egui::TextureHandle> {
+/// Decode a downscaled preview (fits within `max` px) as raw pixels — no egui
+/// context, so it can run on a worker thread (the texture upload is cheap and
+/// done on the main thread).
+pub fn load_thumb_image(path: &Path, max: u32) -> Result<egui::ColorImage> {
     let img = image::open(path)?.thumbnail(max, max).to_rgba8();
     let size = [img.width() as usize, img.height() as usize];
-    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("thumb").to_string();
-    Ok(ctx.load_texture(format!("thumb:{name}"), color, egui::TextureOptions::LINEAR))
+    Ok(egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw()))
 }
 
 /// Human-readable local timestamp, taken from the Unix time baked into Monado's

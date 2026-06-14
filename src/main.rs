@@ -398,57 +398,78 @@ fn build_wrist(
     use egui_phosphor::regular as icons;
     let mut action = WristAction::None;
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
-        panel_card(ui, alpha, |ui| {
+        ui.vertical_centered(|ui| {
+            // Count above the card. Always present (a space when single) so the
+            // card never changes size with the queue — keeps it clear of WayVR.
+            let count = if total > 1 { format!("{} / {}", idx + 1, total) } else { " ".to_string() };
+            ui.label(egui::RichText::new(count).size(16.0).color(theme::ON_SURFACE_VAR));
             ui.horizontal(|ui| {
-                let size = egui::vec2(100.0, 72.0);
-                match (qr, thumb) {
-                    // QR notification: a QR glyph button + the decoded content.
-                    (Some(content), _) => {
-                        let icon = egui::RichText::new(icons::QR_CODE).size(44.0).color(egui::Color32::BLACK);
-                        if ui.add_sized(size, egui::Button::new(icon).fill(theme::PRIMARY)).on_hover_text("Open").clicked() {
-                            action = WristAction::Open;
+                // Fixed arrow cell height (>= the card) so both arrows define the
+                // row height and center consistently — otherwise the one added
+                // before the card gets top-aligned.
+                let arrow = egui::vec2(44.0, 150.0);
+                // ‹ older — to the side of the card.
+                if ui
+                    .add_enabled_ui(idx + 1 < total, |ui| {
+                        ui.add_sized(arrow, egui::Button::new(egui::RichText::new(icons::CARET_LEFT).size(30.0)).frame(false))
+                    })
+                    .inner
+                    .on_hover_text("Older")
+                    .clicked()
+                {
+                    action = WristAction::Older;
+                }
+                // The fixed-size notification card.
+                panel_card(ui, alpha, |ui| {
+                    ui.horizontal(|ui| {
+                        let size = egui::vec2(100.0, 72.0);
+                        match (qr, thumb) {
+                            // QR notification: a QR glyph button + the decoded content.
+                            (Some(content), _) => {
+                                let icon = egui::RichText::new(icons::QR_CODE).size(44.0).color(egui::Color32::BLACK);
+                                if ui.add_sized(size, egui::Button::new(icon).fill(theme::PRIMARY)).on_hover_text("Open").clicked() {
+                                    action = WristAction::Open;
+                                }
+                                ui.add_space(10.0);
+                                ui.vertical(|ui| {
+                                    ui.add_space(4.0);
+                                    ui.label(egui::RichText::new("QR code").strong().color(egui::Color32::WHITE));
+                                    ui.add_space(2.0);
+                                    ui.label(egui::RichText::new(truncate(content, 28)).size(14.0).color(theme::ON_SURFACE_VAR));
+                                });
+                            }
+                            // Screenshot notification: a clickable preview + date.
+                            (None, Some(t)) => {
+                                let img = egui::Image::new(t).fit_to_exact_size(size).corner_radius(8);
+                                if ui.add(egui::ImageButton::new(img).frame(false)).on_hover_text("Open").clicked() {
+                                    action = WristAction::Open;
+                                }
+                                ui.add_space(10.0);
+                                ui.vertical(|ui| {
+                                    ui.add_space(4.0);
+                                    ui.label(egui::RichText::new(format!("{}  New screenshot", icons::CAMERA)).strong().color(egui::Color32::WHITE));
+                                    ui.add_space(2.0);
+                                    ui.label(egui::RichText::new(when).size(15.0).color(theme::ON_SURFACE_VAR));
+                                });
+                            }
+                            (None, None) => {
+                                ui.allocate_space(size);
+                            }
                         }
-                        ui.add_space(10.0);
-                        ui.vertical(|ui| {
-                            ui.add_space(4.0);
-                            ui.label(egui::RichText::new("QR code").strong().color(egui::Color32::WHITE));
-                            ui.add_space(2.0);
-                            ui.label(egui::RichText::new(truncate(content, 34)).size(14.0).color(theme::ON_SURFACE_VAR));
-                        });
-                    }
-                    // Screenshot notification: a clickable preview + date.
-                    (None, Some(t)) => {
-                        let img = egui::Image::new(t).fit_to_exact_size(size).corner_radius(8);
-                        if ui.add(egui::ImageButton::new(img).frame(false)).on_hover_text("Open").clicked() {
-                            action = WristAction::Open;
-                        }
-                        ui.add_space(10.0);
-                        ui.vertical(|ui| {
-                            ui.add_space(4.0);
-                            ui.label(egui::RichText::new(format!("{}  New screenshot", icons::CAMERA)).strong().color(egui::Color32::WHITE));
-                            ui.add_space(2.0);
-                            ui.label(egui::RichText::new(when).size(15.0).color(theme::ON_SURFACE_VAR));
-                        });
-                    }
-                    (None, None) => {
-                        ui.allocate_space(size);
-                    }
+                    });
+                });
+                // › newer.
+                if ui
+                    .add_enabled_ui(idx > 0, |ui| {
+                        ui.add_sized(arrow, egui::Button::new(egui::RichText::new(icons::CARET_RIGHT).size(30.0)).frame(false))
+                    })
+                    .inner
+                    .on_hover_text("Newer")
+                    .clicked()
+                {
+                    action = WristAction::Newer;
                 }
             });
-            if total > 1 {
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let older = egui::Button::new(egui::RichText::new(icons::CARET_LEFT).size(18.0));
-                    if ui.add_enabled(idx + 1 < total, older).on_hover_text("Older").clicked() {
-                        action = WristAction::Older;
-                    }
-                    ui.label(egui::RichText::new(format!("{} / {}", idx + 1, total)).color(theme::ON_SURFACE_VAR));
-                    let newer = egui::Button::new(egui::RichText::new(icons::CARET_RIGHT).size(18.0));
-                    if ui.add_enabled(idx > 0, newer).on_hover_text("Newer").clicked() {
-                        action = WristAction::Newer;
-                    }
-                });
-            }
         });
     });
     action
@@ -463,6 +484,7 @@ fn build_gallery(
     items: &[(egui::TextureHandle, String)],
     page: usize,
     total: usize,
+    loading: bool,
     action: &mut GalleryAction,
     alpha: u8,
 ) {
@@ -487,27 +509,37 @@ fn build_gallery(
                 ui.vertical_centered(|ui| ui.label(egui::RichText::new("No screenshots yet").color(theme::ON_SURFACE_VAR)));
                 return;
             }
-            egui::Grid::new("gallery_grid").spacing(egui::vec2(14.0, 14.0)).show(ui, |ui| {
-                for (k, (tex, when)) in items.iter().enumerate() {
-                    ui.vertical(|ui| {
-                        let img = egui::Image::new(tex).fit_to_exact_size(egui::vec2(150.0, 112.0)).corner_radius(8);
-                        if ui.add(egui::ImageButton::new(img).frame(false)).clicked() {
-                            *action = GalleryAction::Open(k);
-                        }
-                        ui.horizontal(|ui| {
-                            ui.small(egui::RichText::new(when).color(theme::ON_SURFACE_VAR));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button(egui::RichText::new(icons::TRASH).color(theme::ON_SURFACE_VAR)).on_hover_text("Delete").clicked() {
-                                    *action = GalleryAction::Delete(k);
-                                }
+            if loading {
+                ui.add_space(60.0);
+                ui.vertical_centered(|ui| {
+                    ui.add(egui::Spinner::new().size(40.0));
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Loading…").color(theme::ON_SURFACE_VAR));
+                });
+                ui.add_space(60.0);
+            } else {
+                egui::Grid::new("gallery_grid").spacing(egui::vec2(14.0, 14.0)).show(ui, |ui| {
+                    for (k, (tex, when)) in items.iter().enumerate() {
+                        ui.vertical(|ui| {
+                            let img = egui::Image::new(tex).fit_to_exact_size(egui::vec2(150.0, 112.0)).corner_radius(8);
+                            if ui.add(egui::ImageButton::new(img).frame(false)).clicked() {
+                                *action = GalleryAction::Open(k);
+                            }
+                            ui.horizontal(|ui| {
+                                ui.small(egui::RichText::new(when).color(theme::ON_SURFACE_VAR));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.small_button(egui::RichText::new(icons::TRASH).color(theme::ON_SURFACE_VAR)).on_hover_text("Delete").clicked() {
+                                        *action = GalleryAction::Delete(k);
+                                    }
+                                });
                             });
                         });
-                    });
-                    if (k + 1) % COLS == 0 {
-                        ui.end_row();
+                        if (k + 1) % COLS == 0 {
+                            ui.end_row();
+                        }
                     }
-                }
-            });
+                });
+            }
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(6.0);
@@ -674,19 +706,28 @@ fn gallery_scan(dir: &str) -> Vec<(PathBuf, String)> {
     shots::scan_all(dir).into_iter().map(|(p, _)| { let w = shots::shot_time(&p); (p, w) }).collect()
 }
 
-// Decode just one page of thumbnails into `ctx` (keeps the open/page-turn hitch
-// bounded instead of decoding every screenshot up front).
-fn gallery_page_items(ctx: &egui::Context, paths: &[(PathBuf, String)], page: usize) -> Vec<(egui::TextureHandle, String)> {
-    let start = page * GALLERY_PER;
+// (path, date) for one gallery page, to hand to a decode worker.
+fn gallery_page_slice(paths: &[(PathBuf, String)], page: usize) -> Vec<(PathBuf, String)> {
+    let start = (page * GALLERY_PER).min(paths.len());
     let end = (start + GALLERY_PER).min(paths.len());
-    let mut out = Vec::new();
-    for (path, when) in &paths[start.min(paths.len())..end] {
-        match shots::load_thumb(ctx, path, 256) {
-            Ok(t) => out.push((t, when.clone())),
-            Err(e) => log::warn!("gallery thumb {path:?}: {e}"),
+    paths[start..end].to_vec()
+}
+
+type GalleryMsg = (u64, Vec<(egui::ColorImage, String)>);
+
+// Decode one gallery page's thumbnails off the render thread; `gen` lets the
+// main loop drop results for a page it has since navigated away from.
+fn spawn_gallery_page(tx: std::sync::mpsc::Sender<GalleryMsg>, gen: u64, slice: Vec<(PathBuf, String)>) {
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        for (path, when) in slice {
+            match shots::load_thumb_image(&path, 256) {
+                Ok(color) => out.push((color, when)),
+                Err(e) => log::warn!("gallery thumb {path:?}: {e}"),
+            }
         }
-    }
-    out
+        let _ = tx.send((gen, out));
+    });
 }
 
 // A panel pose `dist` metres ahead of the head (and `lateral` to the side),
@@ -1164,7 +1205,7 @@ fn run() -> Result<()> {
 
     let mut settings_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (1080, 680), (0.56, 0.56 * 680.0 / 1080.0), posef([-0.38, 0.0, -1.0]))?;
     let mut gallery_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (1120, 900), (0.66, 0.66 * 900.0 / 1120.0), posef([0.0, 0.0, -1.0]))?;
-    let mut wrist_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (400, 260), (0.11, 0.11 * 260.0 / 400.0), posef([0.0, 0.0, -1.0]))?;
+    let mut wrist_panel = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (620, 300), (0.17, 0.17 * 300.0 / 620.0), posef([0.0, 0.0, -1.0]))?;
     let mut photo_pool: Vec<PhotoSlot> = Vec::new();
     for _ in 0..3 {
         let gfx = make_panel(&session, &device, allocator.clone(), render_pass, format, srgb, (900, 820), (0.52, 0.52 * 820.0 / 900.0), posef([0.0, 0.0, -1.0]))?;
@@ -1190,6 +1231,7 @@ fn run() -> Result<()> {
     let (translate_tx, translate_rx) = std::sync::mpsc::channel::<AsyncMsg>();
     let (share_tx, share_rx) = std::sync::mpsc::channel::<AsyncMsg>();
     let (shot_tx, shot_rx) = std::sync::mpsc::channel::<ShotMsg>();
+    let (gallery_tx, gallery_rx) = std::sync::mpsc::channel::<GalleryMsg>();
     log::info!(
         "loaded settings: enabled={} hold_ms={} qr_detect={} translate={} share={}",
         settings.enabled,
@@ -1267,6 +1309,8 @@ fn run() -> Result<()> {
     let mut gallery_paths: Vec<(PathBuf, String)> = Vec::new(); // all shots (path + date)
     let mut gallery_items: Vec<(egui::TextureHandle, String)> = Vec::new(); // current page
     let mut gallery_page = 0usize;
+    let mut gallery_gen = 0u64; // bumped per page request; drops stale worker results
+    let mut gallery_loading = false;
     let mut sys_prev = false;
     let mut last_sys_press: Option<Instant> = None;
     let mut sys_active_prev = false; // tracks system action active flips (input (un)block)
@@ -1578,7 +1622,10 @@ fn run() -> Result<()> {
                 gallery_visible = true;
                 gallery_page = 0;
                 gallery_paths = gallery_scan(&screenshots_dir);
-                gallery_items = gallery_page_items(&gallery_panel.ctx, &gallery_paths, 0);
+                gallery_items.clear();
+                gallery_loading = true;
+                gallery_gen += 1;
+                spawn_gallery_page(gallery_tx.clone(), gallery_gen, gallery_page_slice(&gallery_paths, 0));
                 if let Some(h) = hmd {
                     gallery_panel.pose = front_pose(&h, 0.85, 0.0);
                 }
@@ -1591,24 +1638,42 @@ fn run() -> Result<()> {
             app_dirty = false;
         }
 
+        // Apply finished gallery page decodes (off-thread); ignore stale pages.
+        while let Ok((gen, decoded)) = gallery_rx.try_recv() {
+            if gen == gallery_gen {
+                gallery_items = decoded
+                    .into_iter()
+                    .map(|(color, when)| (gallery_panel.ctx.load_texture("thumb", color, egui::TextureOptions::LINEAR), when))
+                    .collect();
+                gallery_loading = false;
+            }
+        }
+
         // Render gallery + handle thumbnail clicks / paging.
         if gallery_visible {
             let mut gaction = GalleryAction::None;
             let page = gallery_page;
             let total = gallery_paths.len();
+            let loading = gallery_loading;
             render_panel(&mut gallery_panel, &device, cmd, cmd_pool, queue, fence, alpha_mode, ptr_gallery, |ctx| {
-                build_gallery(ctx, &gallery_items, page, total, &mut gaction, panel_alpha);
+                build_gallery(ctx, &gallery_items, page, total, loading, &mut gaction, panel_alpha);
             })?;
             gallery_rendered = true;
             match gaction {
                 GalleryAction::Close => gallery_visible = false,
                 GalleryAction::PrevPage => {
                     gallery_page = gallery_page.saturating_sub(1);
-                    gallery_items = gallery_page_items(&gallery_panel.ctx, &gallery_paths, gallery_page);
+                    gallery_items.clear();
+                    gallery_loading = true;
+                    gallery_gen += 1;
+                    spawn_gallery_page(gallery_tx.clone(), gallery_gen, gallery_page_slice(&gallery_paths, gallery_page));
                 }
                 GalleryAction::NextPage => {
                     gallery_page += 1;
-                    gallery_items = gallery_page_items(&gallery_panel.ctx, &gallery_paths, gallery_page);
+                    gallery_items.clear();
+                    gallery_loading = true;
+                    gallery_gen += 1;
+                    spawn_gallery_page(gallery_tx.clone(), gallery_gen, gallery_page_slice(&gallery_paths, gallery_page));
                 }
                 GalleryAction::Open(k) => {
                     let global = gallery_page * GALLERY_PER + k;
@@ -1624,7 +1689,10 @@ fn run() -> Result<()> {
                     }
                     gallery_paths = gallery_scan(&screenshots_dir);
                     gallery_page = gallery_page.min(gallery_paths.len().saturating_sub(1) / GALLERY_PER);
-                    gallery_items = gallery_page_items(&gallery_panel.ctx, &gallery_paths, gallery_page);
+                    gallery_items.clear();
+                    gallery_loading = true;
+                    gallery_gen += 1;
+                    spawn_gallery_page(gallery_tx.clone(), gallery_gen, gallery_page_slice(&gallery_paths, gallery_page));
                 }
                 GalleryAction::None => {}
             }
@@ -1707,7 +1775,10 @@ fn run() -> Result<()> {
                         if gallery_visible {
                             gallery_paths = gallery_scan(&screenshots_dir);
                             gallery_page = gallery_page.min(gallery_paths.len().saturating_sub(1) / GALLERY_PER);
-                            gallery_items = gallery_page_items(&gallery_panel.ctx, &gallery_paths, gallery_page);
+                            gallery_items.clear();
+                            gallery_loading = true;
+                            gallery_gen += 1;
+                            spawn_gallery_page(gallery_tx.clone(), gallery_gen, gallery_page_slice(&gallery_paths, gallery_page));
                         }
                     }
                     close_slot(&mut photo_pool[i]);
